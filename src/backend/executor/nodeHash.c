@@ -159,7 +159,7 @@ MultiExecHash(HashState *node)
  * ----------------------------------------------------------------
  */
 HashState *
-ExecInitHash(Hash *node, EState *estate, int eflags)
+ExecInitHash(Hash *node, EState *estate, int eflags, PlanState *parent)
 {
 	HashState  *hashstate;
 
@@ -172,6 +172,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	hashstate = makeNode(HashState);
 	hashstate->ps.plan = (Plan *) node;
 	hashstate->ps.state = estate;
+	hashstate->ps.parent = parent;
 	hashstate->hashtable = NULL;
 	hashstate->hashkeys = NIL;	/* will be set by parent HashJoin */
 
@@ -200,7 +201,8 @@ ExecInitHash(Hash *node, EState *estate, int eflags)
 	/*
 	 * initialize child nodes
 	 */
-	outerPlanState(hashstate) = ExecInitNode(outerPlan(node), estate, eflags);
+	outerPlanState(hashstate) = ExecInitNode(outerPlan(node), estate, eflags,
+											 (PlanState*) hashstate);
 
 	/*
 	 * initialize tuple type. no need to initialize projection info because

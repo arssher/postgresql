@@ -432,7 +432,7 @@ ExecHashJoin(HashJoinState *node)
  * ----------------------------------------------------------------
  */
 HashJoinState *
-ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
+ExecInitHashJoin(HashJoin *node, EState *estate, int eflags, PlanState *parent)
 {
 	HashJoinState *hjstate;
 	Plan	   *outerNode;
@@ -451,6 +451,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	hjstate = makeNode(HashJoinState);
 	hjstate->js.ps.plan = (Plan *) node;
 	hjstate->js.ps.state = estate;
+	hjstate->js.ps.parent = parent;
 
 	/*
 	 * Miscellaneous initialization
@@ -486,8 +487,10 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	outerNode = outerPlan(node);
 	hashNode = (Hash *) innerPlan(node);
 
-	outerPlanState(hjstate) = ExecInitNode(outerNode, estate, eflags);
-	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
+	outerPlanState(hjstate) = ExecInitNode(outerNode, estate, eflags,
+										   (PlanState *) hjstate);
+	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags,
+										   (PlanState *) hjstate);
 
 	/*
 	 * tuple table initialization

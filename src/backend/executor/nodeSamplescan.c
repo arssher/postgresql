@@ -137,7 +137,8 @@ InitScanRelation(SampleScanState *node, EState *estate, int eflags)
  * ----------------------------------------------------------------
  */
 SampleScanState *
-ExecInitSampleScan(SampleScan *node, EState *estate, int eflags)
+ExecInitSampleScan(SampleScan *node, EState *estate, int eflags,
+				   PlanState *parent)
 {
 	SampleScanState *scanstate;
 	TableSampleClause *tsc = node->tablesample;
@@ -152,6 +153,7 @@ ExecInitSampleScan(SampleScan *node, EState *estate, int eflags)
 	scanstate = makeNode(SampleScanState);
 	scanstate->ss.ps.plan = (Plan *) node;
 	scanstate->ss.ps.state = estate;
+	scanstate->ss.ps.parent = parent;
 
 	/*
 	 * Miscellaneous initialization
