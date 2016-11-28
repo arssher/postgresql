@@ -191,7 +191,7 @@ ExecInitNode(Plan *node, EState *estate, int eflags, PlanState *parent)
 			 */
 		case T_SeqScan:
 			result = (PlanState *) ExecInitSeqScan((SeqScan *) node,
-												   estate, eflags);
+												   estate, eflags, parent);
 			break;
 
 		case T_SampleScan:
@@ -274,7 +274,7 @@ ExecInitNode(Plan *node, EState *estate, int eflags, PlanState *parent)
 
 		case T_HashJoin:
 			result = (PlanState *) ExecInitHashJoin((HashJoin *) node,
-													estate, eflags);
+													estate, eflags, parent);
 			break;
 
 			/*
