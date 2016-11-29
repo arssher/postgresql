@@ -391,10 +391,7 @@ typedef struct EState
 
 	/* # of tuples processed, only for SELECT queries */
 	uint64		es_processed;
-	/* # of tuples processed for any query, plays the same role as
-	 * local variable of ExecutePlan, but in push model
-	 */
-	uint64		current_tuple_count;
+
 	Oid			es_lastoid;		/* last oid processed (by INSERT) */
 
 	int			es_top_eflags;	/* eflags passed to ExecutorStart */
@@ -406,6 +403,13 @@ typedef struct EState
 	List	   *es_subplanstates;		/* List of PlanState for SubPlans */
 
 	List	   *es_auxmodifytables;		/* List of secondary ModifyTableStates */
+
+	/* State needed to push tuples to dest in push model, like local variables
+	 * in usual ExecutePlan
+	 */
+	uint64		es_current_tuple_count;
+	bool		es_sendTuples;
+	uint64		es_numberTuplesRequested;
 
 	/*
 	 * this ExprContext is for per-output-tuple operations, such as constraint
