@@ -389,7 +389,12 @@ typedef struct EState
 
 	List	   *es_rowMarks;	/* List of ExecRowMarks */
 
-	uint64		es_processed;	/* # of tuples processed */
+	/* # of tuples processed, only for SELECT queries */
+	uint64		es_processed;
+	/* # of tuples processed for any query, plays the same role as
+	 * local variable of ExecutePlan, but in push model
+	 */
+	uint64		current_tuple_count;
 	Oid			es_lastoid;		/* last oid processed (by INSERT) */
 
 	int			es_top_eflags;	/* eflags passed to ExecutorStart */
