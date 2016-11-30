@@ -24,6 +24,7 @@
 #include "utils/sortsupport.h"
 #include "utils/tuplestore.h"
 #include "utils/tuplesort.h"
+#include "tcop/dest.h" /* for DestReceiver type in Estate */
 
 
 /* ----------------
@@ -410,6 +411,8 @@ typedef struct EState
 	uint64		es_current_tuple_count;
 	bool		es_sendTuples;
 	uint64		es_numberTuplesRequested;
+	CmdType		es_operation;
+	DestReceiver *es_dest;
 
 	/*
 	 * this ExprContext is for per-output-tuple operations, such as constraint
