@@ -175,6 +175,7 @@ ExecInitHash(Hash *node, EState *estate, int eflags, PlanState *parent)
 	hashstate->ps.parent = parent;
 	hashstate->hashtable = NULL;
 	hashstate->hashkeys = NIL;	/* will be set by parent HashJoin */
+	hashstate->first_time_through = true;
 
 	/*
 	 * Miscellaneous initialization
