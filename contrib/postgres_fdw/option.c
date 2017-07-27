@@ -50,8 +50,10 @@ static PQconninfoOption *libpq_options;
  * Helper functions
  */
 static void InitPgFdwOptions(void);
+static void validate_dbname(const char *dbname);
+static void get_opts_hint(StringInfo buf, Oid context, bool libpq_options);
 static bool is_valid_option(const char *keyword, Oid context);
-static bool is_libpq_option(const char *keyword);
+static bool is_libpq_option(const char *keyword, Oid context);
 
 
 /*
@@ -86,16 +88,8 @@ postgres_fdw_validator(PG_FUNCTION_ARGS)
 			 * Unknown option specified, complain about it. Provide a hint
 			 * with list of valid options for the object.
 			 */
-			PgFdwOption *opt;
 			StringInfoData buf;
-
-			initStringInfo(&buf);
-			for (opt = postgres_fdw_options; opt->keyword; opt++)
-			{
-				if (catalog == opt->optcontext)
-					appendStringInfo(&buf, "%s%s", (buf.len > 0) ? ", " : "",
-									 opt->keyword);
-			}
+			get_opts_hint(&buf, catalog, false);
 
 			ereport(ERROR,
 					(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
@@ -142,6 +136,10 @@ postgres_fdw_validator(PG_FUNCTION_ARGS)
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("%s requires a non-negative integer value",
 								def->defname)));
+		}
+		else if (strcmp(def->defname, "dbname") == 0)
+		{
+			validate_dbname(defGetString(def));
 		}
 	}
 
@@ -250,6 +248,59 @@ InitPgFdwOptions(void)
 }
 
 /*
+ * If dbname param specified, make sure it doesn't carry invalid
+ * options if it is a connstring.
+ */
+static void
+validate_dbname(const char *dbname)
+{
+	PQconninfoOption *lopts;
+	PQconninfoOption *lopt;
+
+	/* If it is not a connstring, just skip the check */
+	if ((lopts = PQconninfoParse(dbname, NULL)) != NULL)
+	{
+		for (lopt = lopts; lopt->keyword; lopt++)
+		{
+			if (lopt->val != NULL && !is_libpq_option(lopt->keyword,
+													  ForeignServerRelationId))
+			{
+				StringInfoData buf;
+				get_opts_hint(&buf, ForeignServerRelationId, true);
+
+				ereport(ERROR,
+						(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+						 errmsg("invalid option in dbname connstring \"%s\"",
+								lopt->keyword),
+						 errhint("Valid options in this context are: %s",
+								 buf.data)));
+			}
+		}
+		PQconninfoFree(lopts);
+	}
+}
+
+/*
+ * Put to 'buf' a hint with list of valid options for the object 'context'. If
+ * libpq_options is true, only libpq options are provided. 'buf' must point to
+ * existing StringInfoData struct when called.
+ */
+static void
+get_opts_hint(StringInfo buf, Oid context, bool libpq_options)
+{
+	PgFdwOption *opt;
+
+	initStringInfo(buf);
+	for (opt = postgres_fdw_options; opt->keyword; opt++)
+	{
+		if (context == opt->optcontext &&
+			(!libpq_options || opt->is_libpq_opt))
+			appendStringInfo(buf, "%s%s", (buf->len > 0) ? ", " : "",
+							 opt->keyword);
+	}
+}
+
+/*
  * Check whether the given option is one of the valid postgres_fdw options.
  * context is the Oid of the catalog holding the object the option is for.
  */
@@ -271,9 +322,11 @@ is_valid_option(const char *keyword, Oid context)
 
 /*
  * Check whether the given option is one of the valid libpq options.
+ * context is the Oid of the catalog holding the object the option is for;
+ * if it is InvalidOid, don't check the catalog.
  */
 static bool
-is_libpq_option(const char *keyword)
+is_libpq_option(const char *keyword, Oid context)
 {
 	PgFdwOption *opt;
 
@@ -281,7 +334,8 @@ is_libpq_option(const char *keyword)
 
 	for (opt = postgres_fdw_options; opt->keyword; opt++)
 	{
-		if (opt->is_libpq_opt && strcmp(opt->keyword, keyword) == 0)
+		if (opt->is_libpq_opt && strcmp(opt->keyword, keyword) == 0 &&
+			(context == InvalidOid || context == opt->optcontext))
 			return true;
 	}
 
@@ -308,7 +362,7 @@ ExtractConnectionOptions(List *defelems, const char **keywords,
 	{
 		DefElem    *d = (DefElem *) lfirst(lc);
 
-		if (is_libpq_option(d->defname))
+		if (is_libpq_option(d->defname, InvalidOid))
 		{
 			keywords[i] = d->defname;
 			values[i] = defGetString(d);

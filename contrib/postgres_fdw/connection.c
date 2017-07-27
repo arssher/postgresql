@@ -263,7 +263,7 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 		/* verify connection parameters and make connection */
 		check_conn_params(keywords, values);
 
-		conn = PQconnectdbParams(keywords, values, false);
+		conn = PQconnectdbParams(keywords, values, true);
 		if (!conn || PQstatus(conn) != CONNECTION_OK)
 			ereport(ERROR,
 					(errcode(ERRCODE_SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION),
