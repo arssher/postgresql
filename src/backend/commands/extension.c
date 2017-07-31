@@ -99,7 +99,15 @@ typedef struct ExtensionVersionInfo
 	struct ExtensionVersionInfo *previous;	/* current best predecessor */
 } ExtensionVersionInfo;
 
+/* State needed by script_error_callback */
+typedef struct
+{
+	const char *script;
+	const char *filename;
+}	script_error_callback_arg;
+
 /* Local functions */
+static void script_error_callback(void *arg);
 static List *find_update_path(List *evi_list,
 				 ExtensionVersionInfo *evi_start,
 				 ExtensionVersionInfo *evi_target,
@@ -696,9 +704,22 @@ read_extension_script_file(const ExtensionControlFile *control,
 static void
 execute_sql_string(const char *sql, const char *filename)
 {
+	script_error_callback_arg callback_arg;
+	ErrorContextCallback sqlerrcontext;
 	List	   *raw_parsetree_list;
 	DestReceiver *dest;
 	ListCell   *lc1;
+
+	/*
+	 * Setup error traceback support for ereport().
+	 */
+	callback_arg.script = "nothing interesting here";
+	callback_arg.filename = filename;
+
+	sqlerrcontext.callback = script_error_callback;
+	sqlerrcontext.arg = (void *) &callback_arg;
+	sqlerrcontext.previous = error_context_stack;
+	error_context_stack = &sqlerrcontext;
 
 	/*
 	 * Parse the SQL string into a list of raw parse trees.
@@ -773,8 +794,31 @@ execute_sql_string(const char *sql, const char *filename)
 		}
 	}
 
+	error_context_stack = sqlerrcontext.previous;
+
 	/* Be sure to advance the command counter after the last script command */
 	CommandCounterIncrement();
+}
+
+/*
+ * error context callback for errors within an extension script
+ */
+static void
+script_error_callback(void *arg)
+{
+	script_error_callback_arg *callback_arg = (script_error_callback_arg *) arg;
+	int			syntaxerrposition;
+
+	/* If it's a syntax error, convert to internal syntax error report */
+	syntaxerrposition = geterrposition();
+	if (syntaxerrposition > 0)
+	{
+		errposition(0);
+		internalerrposition(syntaxerrposition);
+		internalerrquery(callback_arg->script);
+	}
+
+	errcontext("extension script file \"%s\"", callback_arg->filename);
 }
 
 /*
