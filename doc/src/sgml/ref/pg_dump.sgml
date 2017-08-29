@@ -337,14 +337,16 @@ PostgreSQL documentation
         but to abort the dump.
        </para>
        <para>
-        For a consistent backup, the database server needs to support synchronized snapshots,
-        a feature that was introduced in <productname>PostgreSQL</productname> 9.2. With this
-        feature, database clients can ensure they see the same data set even though they use
-        different connections. <command>pg_dump -j</command> uses multiple database
-        connections; it connects to the database once with the master process and
-        once again for each worker job. Without the synchronized snapshot feature, the
-        different worker jobs wouldn't be guaranteed to see the same data in each connection,
-        which could lead to an inconsistent backup.
+        For a consistent backup, the database server needs to support
+        synchronized snapshots, a feature that was introduced in
+        <productname>PostgreSQL</productname> 9.2 for primary servers and 10
+        for standbys. With this feature, database clients can ensure they see
+        the same data set even though they use different connections.
+        <command>pg_dump -j</command> uses multiple database connections; it
+        connects to the database once with the master process and once again
+        for each worker job. Without the synchronized snapshot feature, the
+        different worker jobs wouldn't be guaranteed to see the same data in
+        each connection, which could lead to an inconsistent backup.
        </para>
        <para>
         If you want to run a parallel dump of a pre-9.2 server, you need to make sure that the
@@ -884,6 +886,21 @@ PostgreSQL documentation
         servers of other versions that may have slightly different sets
         of reserved words.  Using <option>--quote-all-identifiers</> prevents
         such issues, at the price of a harder-to-read dump script.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--load-via-partition-root</></term>
+      <listitem>
+       <para>
+        When dumping a COPY or INSERT statement for a partitioned table,
+        target the root of the partitioning hierarchy which contains it rather
+        than the partition itself.  This may be useful when reloading data on
+        a server where rows do not always fall into the same partitions as
+        they did on the original server.  This could happen, for example, if
+        the partitioning column is of type text and the two system have
+        different definitions of the collation used to partition the data.
        </para>
       </listitem>
      </varlistentry>

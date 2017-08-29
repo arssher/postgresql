@@ -6,7 +6,7 @@
 
   <formalpara>
    <title>Release date:</title>
-   <para>2017-??-?? (current as of 2017-07-09, commit 3381898f9)</para>
+   <para>2017-??-?? (current as of 2017-08-26, commit 145ca364d)</para>
   </formalpara>
 
   <sect2>
@@ -408,6 +408,55 @@
 
     <listitem>
 <!--
+2017-07-31 [c0a15e07c] Always use 2048 bit DH parameters for OpenSSL ephemeral
+-->
+     <para>
+      Add configuration option <xref linkend="guc-ssl-dh-params-file"> to
+      specify file name for custom OpenSSL DH parameters (Heikki Linnakangas)
+     </para>
+
+     <para>
+      This replaces the hardcoded, undocumented file
+      name <filename>dh1024.pem</>.  Note that <filename>dh1024.pem</> is
+      no longer examined by default; you must set this option to use custom
+      DH parameters.
+     </para>
+    </listitem>
+
+    <listitem>
+<!--
+2017-07-31 [c0a15e07c] Always use 2048 bit DH parameters for OpenSSL ephemeral
+-->
+     <para>
+      Increase the size of the default DH parameters used for OpenSSL
+      ephemeral DH ciphers to 2048 bits (Heikki Linnakangas)
+     </para>
+
+     <para>
+      The size of the compiled-in DH parameters has been increased from
+      1024 to 2048 bits, making DH key exchange more resistant to
+      brute-force attacks.  However, some old SSL implementations, notably
+      some revisions of Java Runtime Environment version 6, will not accept
+      DH parameters longer than 1024 bits, and hence will not be able to
+      connect over SSL.  If it's necessary to support such old clients, you
+      can use custom 1024-bit DH parameters instead of the compiled-in
+      defaults.  See <xref linkend="guc-ssl-dh-params-file">.
+     </para>
+    </listitem>
+
+    <listitem>
+<!--
+2017-08-04 [c30f1770a] Apply ALTER ... SET NOT NULL recursively in ALTER ... AD
+-->
+     <para>
+      When <command>ALTER TABLE ... ADD PRIMARY KEY</> marks
+      columns <literal>NOT NULL</>, that change now propagates to
+      inheritance child tables as well (Michael Paquier)
+     </para>
+    </listitem>
+
+    <listitem>
+<!--
 2017-02-13 [7ada2d31f] Remove contrib/tsearch2.
 -->
      <para>
@@ -417,7 +466,7 @@
      <para>
       This module provided compatibility with the version of full text
       search that shipped in pre-8.3 <productname>PostgreSQL</> releases.
-    </para>
+     </para>
     </listitem>
 
     <listitem>
@@ -850,10 +899,11 @@
       <listitem>
 <!--
 2017-03-25 [b8d7f053c] Faster expression evaluation and targetlist projection.
+2017-07-30 [cc9f08b6b] Move ExecProcNode from dispatch to function pointer base
 -->
        <para>
-        Reduce expression evaluation overhead during query execution (Andres
-        Freund)
+        Reduce expression evaluation overhead during query execution,
+        as well as plan node calling overhead (Andres Freund)
        </para>
 
        <para>
@@ -1440,6 +1490,7 @@
      <listitem>
 <!--
 2017-03-22 [017e4f258] Expose waitforarchive option through pg_stop_backup()
+2017-08-05 [52f8a59dd] Make pg_stop_backup's wait_for_archive flag work on stan
 -->
       <para>
        Allow users to disable <link
@@ -2072,12 +2123,12 @@
 <!--
 2016-11-03 [274bb2b38] libpq: Allow connection strings and URIs to specify mult
 2017-05-19 [5f374fe7a] libpq: Try next host if one of them times out.
+2017-07-10 [7b02ba62e] Allow multiple hostaddrs to go with multiple hostnames.
 -->
       <para>
-       Allow specification of <link
-       linkend="libpq-connect-host">multiple host names</> in libpq
-       connection strings and URIs
-       (Robert Haas)
+       Allow specification of <link linkend="libpq-connect-host">multiple
+       host names or addresses</> in libpq connection strings and URIs
+       (Robert Haas, Heikki Linnakangas)
       </para>
 
       <para>
@@ -2306,6 +2357,16 @@
        </para>
       </listitem>
 
+      <listitem>
+<!--
+2017-08-11 [796818442] Remove pgbench's restriction on placement of -M switch.
+-->
+       <para>
+        Remove restriction on placement of <option>-M</> option relative to
+        other command line options (Tom Lane)
+       </para>
+      </listitem>
+
      </itemizedlist>
 
     </sect4>
@@ -2409,6 +2470,16 @@
        <para>
         This allows use of <application>pg_dumpall</> by non-superusers;
         without this option, it fails due to inability to read passwords.
+       </para>
+      </listitem>
+
+      <listitem>
+<!--
+2017-08-16 [e4892c681] pg_dump: Support using synchronized snapshots on standby
+-->
+       <para>
+        Support using synchronized snapshots when dumping from a standby
+        server (Petr Jelinek)
        </para>
       </listitem>
 
@@ -2798,6 +2869,16 @@
        option <option>--disable-strong-random</> is used.  However, with
        this option, pgcrypto functions requiring a strong random number
        generator will be disabled.
+      </para>
+     </listitem>
+
+     <listitem>
+<!--
+2017-08-15 [d7ab908fb] Distinguish wait-for-connection from wait-for-write-read
+-->
+      <para>
+       Allow <function>WaitLatchOrSocket()</> to wait for socket
+       connection on Windows (Andres Freund)
       </para>
      </listitem>
 

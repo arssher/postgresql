@@ -1868,7 +1868,7 @@ CREATE VIEW table_privileges AS
          ) AS grantee (oid, rolname)
 
     WHERE c.relnamespace = nc.oid
-          AND c.relkind IN ('r', 'v', 'p')
+          AND c.relkind IN ('r', 'v', 'f', 'p')
           AND c.grantee = grantee.oid
           AND c.grantor = u_grantor.oid
           AND c.prtype IN ('INSERT', 'SELECT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER')
@@ -1914,7 +1914,7 @@ CREATE VIEW tables AS
              CASE WHEN nc.oid = pg_my_temp_schema() THEN 'LOCAL TEMPORARY'
                   WHEN c.relkind IN ('r', 'p') THEN 'BASE TABLE'
                   WHEN c.relkind = 'v' THEN 'VIEW'
-                  WHEN c.relkind = 'f' THEN 'FOREIGN TABLE'
+                  WHEN c.relkind = 'f' THEN 'FOREIGN'
                   ELSE null END
              AS character_data) AS table_type,
 

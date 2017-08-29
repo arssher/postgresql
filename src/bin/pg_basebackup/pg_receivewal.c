@@ -120,7 +120,7 @@ stop_streaming(XLogRecPtr xlogpos, uint32 timeline, bool segment_finished)
 	 * slightly before the end of the WAL that we received on the previous
 	 * timeline, but it's close enough for reporting purposes.
 	 */
-	if (prevtimeline != 0 && prevtimeline != timeline)
+	if (verbose && prevtimeline != 0 && prevtimeline != timeline)
 		fprintf(stderr, _("%s: switched to timeline %u at %X/%X\n"),
 				progname, timeline,
 				(uint32) (prevpos >> 32), (uint32) prevpos);
@@ -130,8 +130,9 @@ stop_streaming(XLogRecPtr xlogpos, uint32 timeline, bool segment_finished)
 
 	if (time_to_abort)
 	{
-		fprintf(stderr, _("%s: received interrupt signal, exiting\n"),
-				progname);
+		if (verbose)
+			fprintf(stderr, _("%s: received interrupt signal, exiting\n"),
+					progname);
 		return true;
 	}
 	return false;
@@ -280,7 +281,7 @@ FindStreamingStart(uint32 *tli)
 			}
 			if (lseek(fd, (off_t) (-4), SEEK_END) < 0)
 			{
-				fprintf(stderr, _("%s: could not seek compressed file \"%s\": %s\n"),
+				fprintf(stderr, _("%s: could not seek in compressed file \"%s\": %s\n"),
 						progname, fullpath, strerror(errno));
 				disconnect_and_exit(1);
 			}

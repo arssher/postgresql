@@ -1656,11 +1656,11 @@ pg_get_partkeydef_worker(Oid relid, int prettyFlags,
 	{
 		case PARTITION_STRATEGY_LIST:
 			if (!attrsOnly)
-				appendStringInfo(&buf, "LIST");
+				appendStringInfoString(&buf, "LIST");
 			break;
 		case PARTITION_STRATEGY_RANGE:
 			if (!attrsOnly)
-				appendStringInfo(&buf, "RANGE");
+				appendStringInfoString(&buf, "RANGE");
 			break;
 		default:
 			elog(ERROR, "unexpected partition strategy: %d",
@@ -1668,7 +1668,7 @@ pg_get_partkeydef_worker(Oid relid, int prettyFlags,
 	}
 
 	if (!attrsOnly)
-		appendStringInfo(&buf, " (");
+		appendStringInfoString(&buf, " (");
 	sep = "";
 	for (keyno = 0; keyno < form->partnatts; keyno++)
 	{
@@ -3698,10 +3698,12 @@ set_relation_column_names(deparse_namespace *dpns, RangeTblEntry *rte,
 
 		for (i = 0; i < ncolumns; i++)
 		{
-			if (tupdesc->attrs[i]->attisdropped)
+			Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+
+			if (attr->attisdropped)
 				real_colnames[i] = NULL;
 			else
-				real_colnames[i] = pstrdup(NameStr(tupdesc->attrs[i]->attname));
+				real_colnames[i] = pstrdup(NameStr(attr->attname));
 		}
 		relation_close(rel, AccessShareLock);
 	}
@@ -5391,7 +5393,7 @@ get_target_list(List *targetList, deparse_context *context,
 		 * Otherwise, just use what we can find in the TLE.
 		 */
 		if (resultDesc && colno <= resultDesc->natts)
-			colname = NameStr(resultDesc->attrs[colno - 1]->attname);
+			colname = NameStr(TupleDescAttr(resultDesc, colno - 1)->attname);
 		else
 			colname = tle->resname;
 
@@ -5635,10 +5637,10 @@ get_rule_sortgroupclause(Index ref, List *tlist, bool force_colno,
 								  ||IsA(expr, WindowFunc));
 
 		if (need_paren)
-			appendStringInfoString(context->buf, "(");
+			appendStringInfoChar(context->buf, '(');
 		get_rule_expr(expr, context, true);
 		if (need_paren)
-			appendStringInfoString(context->buf, ")");
+			appendStringInfoChar(context->buf, ')');
 	}
 
 	return expr;
@@ -5665,7 +5667,7 @@ get_rule_groupingset(GroupingSet *gset, List *targetlist,
 		case GROUPING_SET_SIMPLE:
 			{
 				if (!omit_parens || list_length(gset->content) != 1)
-					appendStringInfoString(buf, "(");
+					appendStringInfoChar(buf, '(');
 
 				foreach(l, gset->content)
 				{
@@ -5678,7 +5680,7 @@ get_rule_groupingset(GroupingSet *gset, List *targetlist,
 				}
 
 				if (!omit_parens || list_length(gset->content) != 1)
-					appendStringInfoString(buf, ")");
+					appendStringInfoChar(buf, ')');
 			}
 			return;
 
@@ -5701,7 +5703,7 @@ get_rule_groupingset(GroupingSet *gset, List *targetlist,
 		sep = ", ";
 	}
 
-	appendStringInfoString(buf, ")");
+	appendStringInfoChar(buf, ')');
 }
 
 /*
@@ -6741,7 +6743,7 @@ get_name_for_var_field(Var *var, int fieldno,
 		Assert(tupleDesc);
 		/* Got the tupdesc, so we can extract the field name */
 		Assert(fieldno >= 1 && fieldno <= tupleDesc->natts);
-		return NameStr(tupleDesc->attrs[fieldno - 1]->attname);
+		return NameStr(TupleDescAttr(tupleDesc, fieldno - 1)->attname);
 	}
 
 	/* Find appropriate nesting depth */
@@ -7051,7 +7053,7 @@ get_name_for_var_field(Var *var, int fieldno,
 	Assert(tupleDesc);
 	/* Got the tupdesc, so we can extract the field name */
 	Assert(fieldno >= 1 && fieldno <= tupleDesc->natts);
-	return NameStr(tupleDesc->attrs[fieldno - 1]->attname);
+	return NameStr(TupleDescAttr(tupleDesc, fieldno - 1)->attname);
 }
 
 /*
@@ -8180,7 +8182,7 @@ get_rule_expr(Node *node, deparse_context *context,
 					Node	   *e = (Node *) lfirst(arg);
 
 					if (tupdesc == NULL ||
-						!tupdesc->attrs[i]->attisdropped)
+						!TupleDescAttr(tupdesc, i)->attisdropped)
 					{
 						appendStringInfoString(buf, sep);
 						/* Whole-row Vars need special treatment here */
@@ -8193,7 +8195,7 @@ get_rule_expr(Node *node, deparse_context *context,
 				{
 					while (i < tupdesc->natts)
 					{
-						if (!tupdesc->attrs[i]->attisdropped)
+						if (!TupleDescAttr(tupdesc, i)->attisdropped)
 						{
 							appendStringInfoString(buf, sep);
 							appendStringInfoString(buf, "NULL");
@@ -8713,7 +8715,7 @@ get_rule_expr(Node *node, deparse_context *context,
 							sep = ", ";
 						}
 
-						appendStringInfoString(buf, ")");
+						appendStringInfoChar(buf, ')');
 						break;
 
 					case PARTITION_STRATEGY_RANGE:
@@ -8722,47 +8724,9 @@ get_rule_expr(Node *node, deparse_context *context,
 							   list_length(spec->lowerdatums) ==
 							   list_length(spec->upperdatums));
 
-						appendStringInfoString(buf, "FOR VALUES FROM (");
-						sep = "";
-						foreach(cell, spec->lowerdatums)
-						{
-							PartitionRangeDatum *datum =
-							castNode(PartitionRangeDatum, lfirst(cell));
-
-							appendStringInfoString(buf, sep);
-							if (datum->kind == PARTITION_RANGE_DATUM_MINVALUE)
-								appendStringInfoString(buf, "MINVALUE");
-							else if (datum->kind == PARTITION_RANGE_DATUM_MAXVALUE)
-								appendStringInfoString(buf, "MAXVALUE");
-							else
-							{
-								Const	   *val = castNode(Const, datum->value);
-
-								get_const_expr(val, context, -1);
-							}
-							sep = ", ";
-						}
-						appendStringInfoString(buf, ") TO (");
-						sep = "";
-						foreach(cell, spec->upperdatums)
-						{
-							PartitionRangeDatum *datum =
-							castNode(PartitionRangeDatum, lfirst(cell));
-
-							appendStringInfoString(buf, sep);
-							if (datum->kind == PARTITION_RANGE_DATUM_MINVALUE)
-								appendStringInfoString(buf, "MINVALUE");
-							else if (datum->kind == PARTITION_RANGE_DATUM_MAXVALUE)
-								appendStringInfoString(buf, "MAXVALUE");
-							else
-							{
-								Const	   *val = castNode(Const, datum->value);
-
-								get_const_expr(val, context, -1);
-							}
-							sep = ", ";
-						}
-						appendStringInfoString(buf, ")");
+						appendStringInfo(buf, "FOR VALUES FROM %s TO %s",
+										 get_range_partbound_string(spec->lowerdatums),
+										 get_range_partbound_string(spec->upperdatums));
 						break;
 
 					default:
@@ -10942,4 +10906,44 @@ flatten_reloptions(Oid relid)
 	ReleaseSysCache(tuple);
 
 	return result;
+}
+
+/*
+ * get_one_range_partition_bound_string
+ *		A C string representation of one range partition bound
+ */
+char *
+get_range_partbound_string(List *bound_datums)
+{
+	deparse_context context;
+	StringInfo	buf = makeStringInfo();
+	ListCell   *cell;
+	char	   *sep;
+
+	memset(&context, 0, sizeof(deparse_context));
+	context.buf = buf;
+
+	appendStringInfoString(buf, "(");
+	sep = "";
+	foreach(cell, bound_datums)
+	{
+		PartitionRangeDatum *datum =
+		castNode(PartitionRangeDatum, lfirst(cell));
+
+		appendStringInfoString(buf, sep);
+		if (datum->kind == PARTITION_RANGE_DATUM_MINVALUE)
+			appendStringInfoString(buf, "MINVALUE");
+		else if (datum->kind == PARTITION_RANGE_DATUM_MAXVALUE)
+			appendStringInfoString(buf, "MAXVALUE");
+		else
+		{
+			Const	   *val = castNode(Const, datum->value);
+
+			get_const_expr(val, &context, -1);
+		}
+		sep = ", ";
+	}
+	appendStringInfoChar(buf, ')');
+
+	return buf->data;
 }

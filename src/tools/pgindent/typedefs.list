@@ -138,6 +138,7 @@ AttrDefault
 AttrNumber
 AttributeOpts
 AuthRequest
+AutoPrewarmSharedState
 AutoVacOpts
 AutoVacuumShmemStruct
 AutoVacuumWorkItem
@@ -218,6 +219,7 @@ BlobInfo
 Block
 BlockId
 BlockIdData
+BlockInfoRecord
 BlockNumber
 BlockSampler
 BlockSamplerData
@@ -307,7 +309,6 @@ CheckpointStatsData
 CheckpointerRequest
 CheckpointerShmemStruct
 Chromosome
-City
 CkptSortItem
 CkptTsStatus
 ClientAuthentication_hook_type
@@ -327,6 +328,7 @@ CoerceViaIO
 CoercionContext
 CoercionForm
 CoercionPathType
+CollAliasData
 CollInfo
 CollateClause
 CollateExpr
@@ -569,6 +571,7 @@ ExecForeignUpdate_function
 ExecParallelEstimateContext
 ExecParallelInitializeDSMContext
 ExecPhraseData
+ExecProcNodeMtd
 ExecRowMark
 ExecScanAccessMtd
 ExecScanRecheckMtd
@@ -1180,6 +1183,7 @@ LogicalRepRelation
 LogicalRepTupleData
 LogicalRepTyp
 LogicalRepWorker
+LogicalRepWorkerId
 LogicalRewriteMappingData
 LogicalTape
 LogicalTapeSet
@@ -1770,7 +1774,6 @@ RWConflictPoolHeader
 Range
 RangeBound
 RangeBox
-RangeDatumContent
 RangeFunction
 RangeIOData
 RangeQueryClause
@@ -1880,6 +1883,7 @@ ResourceReleaseCallback
 ResourceReleaseCallbackItem
 ResourceReleasePhase
 RestoreOptions
+RestorePass
 RestrictInfo
 Result
 ResultPath
@@ -2251,6 +2255,7 @@ TransactionStmt
 TransactionStmtKind
 TransformInfo
 TransformJsonStringValuesState
+TransitionCaptureState
 TrgmArc
 TrgmArcInfo
 TrgmColor
@@ -2388,6 +2393,7 @@ WaitEventIO
 WaitEventIPC
 WaitEventSet
 WaitEventTimeout
+WaitPMResult
 WalCloseMethod
 WalLevel
 WalRcvData
@@ -2598,6 +2604,13 @@ dsa_pointer
 dsa_segment_header
 dsa_segment_index
 dsa_segment_map
+dshash_hash
+dshash_parameters
+dshash_partition
+dshash_table
+dshash_table_control
+dshash_table_handle
+dshash_table_item
 dsm_control_header
 dsm_control_item
 dsm_handle

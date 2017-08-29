@@ -522,57 +522,6 @@ CreateCacheMemoryContext(void)
 
 
 /*
- *		AtEOXact_CatCache
- *
- * Clean up catcaches at end of main transaction (either commit or abort)
- *
- * As of PostgreSQL 8.1, catcache pins should get released by the
- * ResourceOwner mechanism.  This routine is just a debugging
- * cross-check that no pins remain.
- */
-void
-AtEOXact_CatCache(bool isCommit)
-{
-#ifdef USE_ASSERT_CHECKING
-	slist_iter	cache_iter;
-
-	slist_foreach(cache_iter, &CacheHdr->ch_caches)
-	{
-		CatCache   *ccp = slist_container(CatCache, cc_next, cache_iter.cur);
-		dlist_iter	iter;
-		int			i;
-
-		/* Check CatCLists */
-		dlist_foreach(iter, &ccp->cc_lists)
-		{
-			CatCList   *cl;
-
-			cl = dlist_container(CatCList, cache_elem, iter.cur);
-			Assert(cl->cl_magic == CL_MAGIC);
-			Assert(cl->refcount == 0);
-			Assert(!cl->dead);
-		}
-
-		/* Check individual tuples */
-		for (i = 0; i < ccp->cc_nbuckets; i++)
-		{
-			dlist_head *bucket = &ccp->cc_bucket[i];
-
-			dlist_foreach(iter, bucket)
-			{
-				CatCTup    *ct;
-
-				ct = dlist_container(CatCTup, cache_elem, iter.cur);
-				Assert(ct->ct_magic == CT_MAGIC);
-				Assert(ct->refcount == 0);
-				Assert(!ct->dead);
-			}
-		}
-	}
-#endif
-}
-
-/*
  *		ResetCatalogCache
  *
  * Reset one catalog cache to empty.
@@ -848,7 +797,7 @@ do { \
 		if (cache->cc_key[i] > 0) { \
 			elog(DEBUG2, "CatalogCacheInitializeCache: load %d/%d w/%d, %u", \
 				i+1, cache->cc_nkeys, cache->cc_key[i], \
-				 tupdesc->attrs[cache->cc_key[i] - 1]->atttypid); \
+				 TupleDescAttr(tupdesc, cache->cc_key[i] - 1)->atttypid); \
 		} else { \
 			elog(DEBUG2, "CatalogCacheInitializeCache: load %d/%d w/%d", \
 				i+1, cache->cc_nkeys, cache->cc_key[i]); \
@@ -913,7 +862,8 @@ CatalogCacheInitializeCache(CatCache *cache)
 
 		if (cache->cc_key[i] > 0)
 		{
-			Form_pg_attribute attr = tupdesc->attrs[cache->cc_key[i] - 1];
+			Form_pg_attribute attr = TupleDescAttr(tupdesc,
+												   cache->cc_key[i] - 1);
 
 			keytype = attr->atttypid;
 			/* cache key columns should always be NOT NULL */

@@ -1454,6 +1454,12 @@ action : CONTINUE_P
 			$<action>$.command = NULL;
 			$<action>$.str = mm_strdup("break");
 		}
+		| DO CONTINUE_P
+		{
+			$<action>$.code = W_CONTINUE;
+			$<action>$.command = NULL;
+			$<action>$.str = mm_strdup("continue");
+		}
 		| SQL_CALL name '(' c_args ')'
 		{
 			$<action>$.code = W_DO;
@@ -1877,14 +1883,17 @@ Iresult:        Iconst				{ $$ = $1; }
                 ;
 
 execute_rest: /* EMPTY */	{ $$ = EMPTY; }
-	| ecpg_using ecpg_into  { $$ = EMPTY; }
+	| ecpg_using opt_ecpg_into  { $$ = EMPTY; }
 	| ecpg_into ecpg_using  { $$ = EMPTY; }
-	| ecpg_using			{ $$ = EMPTY; }
 	| ecpg_into				{ $$ = EMPTY; }
 	;
 
 ecpg_into: INTO into_list	{ $$ = EMPTY; }
 	| into_descriptor		{ $$ = $1; }
+	;
+
+opt_ecpg_into:	/* EMPTY */	{ $$ = EMPTY; }
+	| ecpg_into		{ $$ = $1; }
 	;
 
 ecpg_fetch_into: ecpg_into	{ $$ = $1; }

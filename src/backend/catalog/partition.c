@@ -583,7 +583,7 @@ RelationBuildPartitionDesc(Relation rel)
  * representation of partition bounds.
  */
 bool
-partition_bounds_equal(PartitionKey key,
+partition_bounds_equal(int partnatts, int16 *parttyplen, bool *parttypbyval,
 					   PartitionBoundInfo b1, PartitionBoundInfo b2)
 {
 	int			i;
@@ -601,7 +601,7 @@ partition_bounds_equal(PartitionKey key,
 	{
 		int			j;
 
-		for (j = 0; j < key->partnatts; j++)
+		for (j = 0; j < partnatts; j++)
 		{
 			/* For range partitions, the bounds might not be finite. */
 			if (b1->kind != NULL)
@@ -627,8 +627,7 @@ partition_bounds_equal(PartitionKey key,
 			 * context.  datumIsEqual() should be simple enough to be safe.
 			 */
 			if (!datumIsEqual(b1->datums[i][j], b2->datums[i][j],
-							  key->parttypbyval[j],
-							  key->parttyplen[j]))
+							  parttypbyval[j], parttyplen[j]))
 				return false;
 		}
 
@@ -637,7 +636,7 @@ partition_bounds_equal(PartitionKey key,
 	}
 
 	/* There are ndatums+1 indexes in case of range partitions */
-	if (key->strategy == PARTITION_STRATEGY_RANGE &&
+	if (b1->strategy == PARTITION_STRATEGY_RANGE &&
 		b1->indexes[i] != b2->indexes[i])
 		return false;
 
@@ -722,10 +721,16 @@ check_new_partition_bound(char *relname, Relation parent,
 				 */
 				if (partition_rbound_cmp(key, lower->datums, lower->kind, true,
 										 upper) >= 0)
+				{
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-							 errmsg("cannot create range partition with empty range"),
+							 errmsg("empty range bound specified for partition \"%s\"",
+									relname),
+							 errdetail("Specified lower bound %s is greater than or equal to upper bound %s.",
+									   get_range_partbound_string(spec->lowerdatums),
+									   get_range_partbound_string(spec->upperdatums)),
 							 parser_errposition(pstate, spec->location)));
+				}
 
 				if (partdesc->nparts > 0)
 				{
@@ -898,16 +903,20 @@ get_qual_from_partbound(Relation rel, Relation parent,
  * We must allow for cases where physical attnos of a partition can be
  * different from the parent's.
  *
+ * If found_whole_row is not NULL, *found_whole_row returns whether a
+ * whole-row variable was found in the input expression.
+ *
  * Note: this will work on any node tree, so really the argument and result
  * should be declared "Node *".  But a substantial majority of the callers
  * are working on Lists, so it's less messy to do the casts internally.
  */
 List *
 map_partition_varattnos(List *expr, int target_varno,
-						Relation partrel, Relation parent)
+						Relation partrel, Relation parent,
+						bool *found_whole_row)
 {
 	AttrNumber *part_attnos;
-	bool		found_whole_row;
+	bool		my_found_whole_row;
 
 	if (expr == NIL)
 		return NIL;
@@ -919,10 +928,10 @@ map_partition_varattnos(List *expr, int target_varno,
 										target_varno, 0,
 										part_attnos,
 										RelationGetDescr(parent)->natts,
-										&found_whole_row);
-	/* There can never be a whole-row reference here */
+										RelationGetForm(partrel)->reltype,
+										&my_found_whole_row);
 	if (found_whole_row)
-		elog(ERROR, "unexpected whole-row reference found in partition key");
+		*found_whole_row = my_found_whole_row;
 
 	return expr;
 }
@@ -990,12 +999,16 @@ get_partition_qual_relid(Oid relid)
  * RelationGetPartitionDispatchInfo
  *		Returns information necessary to route tuples down a partition tree
  *
- * All the partitions will be locked with lockmode, unless it is NoLock.
- * A list of the OIDs of all the leaf partitions of rel is returned in
- * *leaf_part_oids.
+ * The number of elements in the returned array (that is, the number of
+ * PartitionDispatch objects for the partitioned tables in the partition tree)
+ * is returned in *num_parted and a list of the OIDs of all the leaf
+ * partitions of rel is returned in *leaf_part_oids.
+ *
+ * All the relations in the partition tree (including 'rel') must have been
+ * locked (using at least the AccessShareLock) by the caller.
  */
 PartitionDispatch *
-RelationGetPartitionDispatchInfo(Relation rel, int lockmode,
+RelationGetPartitionDispatchInfo(Relation rel,
 								 int *num_parted, List **leaf_part_oids)
 {
 	PartitionDispatchData **pd;
@@ -1010,14 +1023,18 @@ RelationGetPartitionDispatchInfo(Relation rel, int lockmode,
 				offset;
 
 	/*
-	 * Lock partitions and make a list of the partitioned ones to prepare
-	 * their PartitionDispatch objects below.
+	 * We rely on the relcache to traverse the partition tree to build both
+	 * the leaf partition OIDs list and the array of PartitionDispatch objects
+	 * for the partitioned tables in the tree.  That means every partitioned
+	 * table in the tree must be locked, which is fine since we require the
+	 * caller to lock all the partitions anyway.
 	 *
-	 * Cannot use find_all_inheritors() here, because then the order of OIDs
-	 * in parted_rels list would be unknown, which does not help, because we
-	 * assign indexes within individual PartitionDispatch in an order that is
-	 * predetermined (determined by the order of OIDs in individual partition
-	 * descriptors).
+	 * For every partitioned table in the tree, starting with the root
+	 * partitioned table, add its relcache entry to parted_rels, while also
+	 * queuing its partitions (in the order in which they appear in the
+	 * partition descriptor) to be looked at later in the same loop.  This is
+	 * a bit tricky but works because the foreach() macro doesn't fetch the
+	 * next list element until the bottom of the loop.
 	 */
 	*num_parted = 1;
 	parted_rels = list_make1(rel);
@@ -1026,29 +1043,24 @@ RelationGetPartitionDispatchInfo(Relation rel, int lockmode,
 	APPEND_REL_PARTITION_OIDS(rel, all_parts, all_parents);
 	forboth(lc1, all_parts, lc2, all_parents)
 	{
-		Relation	partrel = heap_open(lfirst_oid(lc1), lockmode);
+		Oid			partrelid = lfirst_oid(lc1);
 		Relation	parent = lfirst(lc2);
-		PartitionDesc partdesc = RelationGetPartitionDesc(partrel);
 
-		/*
-		 * If this partition is a partitioned table, add its children to the
-		 * end of the list, so that they are processed as well.
-		 */
-		if (partdesc)
+		if (get_rel_relkind(partrelid) == RELKIND_PARTITIONED_TABLE)
 		{
+			/*
+			 * Already locked by the caller.  Note that it is the
+			 * responsibility of the caller to close the below relcache entry,
+			 * once done using the information being collected here (for
+			 * example, in ExecEndModifyTable).
+			 */
+			Relation	partrel = heap_open(partrelid, NoLock);
+
 			(*num_parted)++;
 			parted_rels = lappend(parted_rels, partrel);
 			parted_rel_parents = lappend(parted_rel_parents, parent);
 			APPEND_REL_PARTITION_OIDS(partrel, all_parts, all_parents);
 		}
-		else
-			heap_close(partrel, NoLock);
-
-		/*
-		 * We keep the partitioned ones open until we're done using the
-		 * information being collected here (for example, see
-		 * ExecEndModifyTable).
-		 */
 	}
 
 	/*
@@ -1783,6 +1795,7 @@ generate_partition_qual(Relation rel)
 	List	   *my_qual = NIL,
 			   *result = NIL;
 	Relation	parent;
+	bool		found_whole_row;
 
 	/* Guard against stack overflow due to overly deep partition tree */
 	check_stack_depth();
@@ -1825,7 +1838,11 @@ generate_partition_qual(Relation rel)
 	 * in it to bear this relation's attnos. It's safe to assume varno = 1
 	 * here.
 	 */
-	result = map_partition_varattnos(result, 1, rel, parent);
+	result = map_partition_varattnos(result, 1, rel, parent,
+									 &found_whole_row);
+	/* There can never be a whole-row reference here */
+	if (found_whole_row)
+		elog(ERROR, "unexpected whole-row reference found in partition key");
 
 	/* Save a copy in the relcache */
 	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
@@ -2128,7 +2145,7 @@ qsort_partition_rbound_cmp(const void *a, const void *b, void *arg)
  * partition_rbound_cmp
  *
  * Return for two range bounds whether the 1st one (specified in datum1,
- * content1, and lower1) is <, =, or > the bound specified in *b2.
+ * kind1, and lower1) is <, =, or > the bound specified in *b2.
  *
  * Note that if the values of the two range bounds compare equal, then we take
  * into account whether they are upper or lower bounds, and an upper bound is

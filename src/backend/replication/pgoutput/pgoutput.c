@@ -173,7 +173,7 @@ pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 								&data->publication_names);
 
 		/* Check if we support requested protocol */
-		if (data->protocol_version != LOGICALREP_PROTO_VERSION_NUM)
+		if (data->protocol_version > LOGICALREP_PROTO_VERSION_NUM)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("client sent proto_version=%d but we only support protocol %d or lower",
@@ -303,7 +303,7 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		 */
 		for (i = 0; i < desc->natts; i++)
 		{
-			Form_pg_attribute att = desc->attrs[i];
+			Form_pg_attribute att = TupleDescAttr(desc, i);
 
 			if (att->attisdropped)
 				continue;

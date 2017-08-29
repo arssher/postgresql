@@ -185,6 +185,9 @@ relationHasPrimaryKey(Relation rel)
  * created NOT NULL during CREATE TABLE), do an ALTER SET NOT NULL to mark
  * them so --- or fail if they are not in fact nonnull.
  *
+ * As of PG v10, the SET NOT NULL is applied to child tables as well, so
+ * that the behavior is like a manual SET NOT NULL.
+ *
  * Caller had better have at least ShareLock on the table, else the not-null
  * checking isn't trustworthy.
  */
@@ -253,17 +256,13 @@ index_check_primary_key(Relation heapRel,
 	}
 
 	/*
-	 * XXX: Shouldn't the ALTER TABLE .. SET NOT NULL cascade to child tables?
-	 * Currently, since the PRIMARY KEY itself doesn't cascade, we don't
-	 * cascade the notnull constraint(s) either; but this is pretty debatable.
-	 *
 	 * XXX: possible future improvement: when being called from ALTER TABLE,
 	 * it would be more efficient to merge this with the outer ALTER TABLE, so
 	 * as to avoid two scans.  But that seems to complicate DefineIndex's API
 	 * unduly.
 	 */
 	if (cmds)
-		AlterTableInternal(RelationGetRelid(heapRel), cmds, false);
+		AlterTableInternal(RelationGetRelid(heapRel), cmds, true);
 }
 
 /*
@@ -308,7 +307,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 	for (i = 0; i < numatts; i++)
 	{
 		AttrNumber	atnum = indexInfo->ii_KeyAttrNumbers[i];
-		Form_pg_attribute to = indexTupDesc->attrs[i];
+		Form_pg_attribute to = TupleDescAttr(indexTupDesc, i);
 		HeapTuple	tuple;
 		Form_pg_type typeTup;
 		Form_pg_opclass opclassTup;
@@ -334,7 +333,8 @@ ConstructTupleDescriptor(Relation heapRelation,
 				 */
 				if (atnum > natts)	/* safety check */
 					elog(ERROR, "invalid column number %d", atnum);
-				from = heapTupDesc->attrs[AttrNumberGetAttrOffset(atnum)];
+				from = TupleDescAttr(heapTupDesc,
+									 AttrNumberGetAttrOffset(atnum));
 			}
 
 			/*
@@ -496,7 +496,7 @@ InitializeAttributeOids(Relation indexRelation,
 	tupleDescriptor = RelationGetDescr(indexRelation);
 
 	for (i = 0; i < numatts; i += 1)
-		tupleDescriptor->attrs[i]->attrelid = indexoid;
+		TupleDescAttr(tupleDescriptor, i)->attrelid = indexoid;
 }
 
 /* ----------------------------------------------------------------
@@ -525,14 +525,16 @@ AppendAttributeTuples(Relation indexRelation, int numatts)
 
 	for (i = 0; i < numatts; i++)
 	{
+		Form_pg_attribute attr = TupleDescAttr(indexTupDesc, i);
+
 		/*
 		 * There used to be very grotty code here to set these fields, but I
 		 * think it's unnecessary.  They should be set already.
 		 */
-		Assert(indexTupDesc->attrs[i]->attnum == i + 1);
-		Assert(indexTupDesc->attrs[i]->attcacheoff == -1);
+		Assert(attr->attnum == i + 1);
+		Assert(attr->attcacheoff == -1);
 
-		InsertPgAttributeTuple(pg_attribute, indexTupDesc->attrs[i], indstate);
+		InsertPgAttributeTuple(pg_attribute, attr, indstate);
 	}
 
 	CatalogCloseIndexes(indstate);

@@ -165,6 +165,7 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	Oid			existing_relid;
 	ParseCallbackState pcbstate;
 	bool		like_found = false;
+	bool		is_foreign_table = IsA(stmt, CreateForeignTableStmt);
 
 	/*
 	 * We must not scribble on the passed-in CreateStmt, so copy it.  (This is
@@ -330,7 +331,7 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	/*
 	 * Postprocess check constraints.
 	 */
-	transformCheckConstraints(&cxt, true);
+	transformCheckConstraints(&cxt, !is_foreign_table ? true : false);
 
 	/*
 	 * Output results.
@@ -968,7 +969,8 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 	for (parent_attno = 1; parent_attno <= tupleDesc->natts;
 		 parent_attno++)
 	{
-		Form_pg_attribute attribute = tupleDesc->attrs[parent_attno - 1];
+		Form_pg_attribute attribute = TupleDescAttr(tupleDesc,
+													parent_attno - 1);
 		char	   *attributeName = NameStr(attribute->attname);
 		ColumnDef  *def;
 
@@ -1107,7 +1109,7 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 			ccbin_node = map_variable_attnos(stringToNode(ccbin),
 											 1, 0,
 											 attmap, tupleDesc->natts,
-											 &found_whole_row);
+											 InvalidOid, &found_whole_row);
 
 			/*
 			 * We reject whole-row variables because the whole point of LIKE
@@ -1218,7 +1220,7 @@ transformOfType(CreateStmtContext *cxt, TypeName *ofTypename)
 	tupdesc = lookup_rowtype_tupdesc(ofTypeId, -1);
 	for (i = 0; i < tupdesc->natts; i++)
 	{
-		Form_pg_attribute attr = tupdesc->attrs[i];
+		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
 		ColumnDef  *n;
 
 		if (attr->attisdropped)
@@ -1255,7 +1257,6 @@ generateClonedIndexStmt(CreateStmtContext *cxt, Relation source_idx,
 						const AttrNumber *attmap, int attmap_length)
 {
 	Oid			source_relid = RelationGetRelid(source_idx);
-	Form_pg_attribute *attrs = RelationGetDescr(source_idx)->attrs;
 	HeapTuple	ht_idxrel;
 	HeapTuple	ht_idx;
 	HeapTuple	ht_am;
@@ -1433,6 +1434,8 @@ generateClonedIndexStmt(CreateStmtContext *cxt, Relation source_idx,
 	{
 		IndexElem  *iparam;
 		AttrNumber	attnum = idxrec->indkey.values[keyno];
+		Form_pg_attribute attr = TupleDescAttr(RelationGetDescr(source_idx),
+											   keyno);
 		int16		opt = source_idx->rd_indoption[keyno];
 
 		iparam = makeNode(IndexElem);
@@ -1463,7 +1466,7 @@ generateClonedIndexStmt(CreateStmtContext *cxt, Relation source_idx,
 			indexkey = map_variable_attnos(indexkey,
 										   1, 0,
 										   attmap, attmap_length,
-										   &found_whole_row);
+										   InvalidOid, &found_whole_row);
 
 			/* As in transformTableLikeClause, reject whole-row variables */
 			if (found_whole_row)
@@ -1480,7 +1483,7 @@ generateClonedIndexStmt(CreateStmtContext *cxt, Relation source_idx,
 		}
 
 		/* Copy the original index column name */
-		iparam->indexcolname = pstrdup(NameStr(attrs[keyno]->attname));
+		iparam->indexcolname = pstrdup(NameStr(attr->attname));
 
 		/* Add the collation name, if non-default */
 		iparam->collation = get_collation(indcollation->values[keyno], keycoltype);
@@ -1539,7 +1542,7 @@ generateClonedIndexStmt(CreateStmtContext *cxt, Relation source_idx,
 		pred_tree = map_variable_attnos(pred_tree,
 										1, 0,
 										attmap, attmap_length,
-										&found_whole_row);
+										InvalidOid, &found_whole_row);
 
 		/* As in transformTableLikeClause, reject whole-row variables */
 		if (found_whole_row)
@@ -1920,7 +1923,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 			if (attnum > 0)
 			{
 				Assert(attnum <= heap_rel->rd_att->natts);
-				attform = heap_rel->rd_att->attrs[attnum - 1];
+				attform = TupleDescAttr(heap_rel->rd_att, attnum - 1);
 			}
 			else
 				attform = SystemAttributeDefinition(attnum,
@@ -2039,7 +2042,8 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 									inh->relname)));
 				for (count = 0; count < rel->rd_att->natts; count++)
 				{
-					Form_pg_attribute inhattr = rel->rd_att->attrs[count];
+					Form_pg_attribute inhattr = TupleDescAttr(rel->rd_att,
+															  count);
 					char	   *inhname = NameStr(inhattr->attname);
 
 					if (inhattr->attisdropped)
@@ -2129,9 +2133,9 @@ transformCheckConstraints(CreateStmtContext *cxt, bool skipValidation)
 		return;
 
 	/*
-	 * If creating a new table, we can safely skip validation of check
-	 * constraints, and nonetheless mark them valid.  (This will override any
-	 * user-supplied NOT VALID flag.)
+	 * If creating a new table (but not a foreign table), we can safely skip
+	 * validation of check constraints, and nonetheless mark them valid. (This
+	 * will override any user-supplied NOT VALID flag.)
 	 */
 	if (skipValidation)
 	{
