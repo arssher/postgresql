@@ -426,10 +426,11 @@ begin_remote_xact(ConnCacheEntry *entry)
 		elog(DEBUG3, "starting remote transaction on connection %p",
 			 entry->conn);
 
-		if (IsolationIsSerializable())
-			sql = "START TRANSACTION ISOLATION LEVEL SERIALIZABLE";
-		else
-			sql = "START TRANSACTION ISOLATION LEVEL REPEATABLE READ";
+		sql = "START TRANSACTION ISOLATION LEVEL READ COMMITTED";
+		/* if (IsolationIsSerializable()) */
+			/* sql = "START TRANSACTION ISOLATION LEVEL SERIALIZABLE"; */
+		/* else */
+			/* sql = "START TRANSACTION ISOLATION LEVEL REPEATABLE READ"; */
 		entry->changing_xact_state = true;
 		do_sql_command(entry->conn, sql);
 		entry->xact_depth = 1;
