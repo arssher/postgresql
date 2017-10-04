@@ -171,6 +171,8 @@ CreatePublication(CreatePublicationStmt *stmt)
 						stmt->pubname)));
 	}
 
+	elog(WARNING, "creating publication %s", stmt->pubname);
+
 	/* Form a tuple. */
 	memset(values, 0, sizeof(values));
 	memset(nulls, false, sizeof(nulls));
@@ -424,10 +426,14 @@ RemovePublicationById(Oid pubid)
 {
 	Relation	rel;
 	HeapTuple	tup;
+	Form_pg_publication pub;
 
 	rel = heap_open(PublicationRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(PUBLICATIONOID, ObjectIdGetDatum(pubid));
+
+	pub = (Form_pg_publication) GETSTRUCT(tup);
+	elog(WARNING, "removing publication %s", pub->pubname.data);
 
 	if (!HeapTupleIsValid(tup))
 		elog(ERROR, "cache lookup failed for publication %u", pubid);
