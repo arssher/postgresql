@@ -17,6 +17,7 @@
 #include "access/htup_details.h"
 #include "catalog/pg_user_mapping.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -25,7 +26,6 @@
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
-
 
 /*
  * Connection cache hash table entry
@@ -78,6 +78,7 @@ static void disconnect_pg_server(ConnCacheEntry *entry);
 static void check_conn_params(const char **keywords, const char **values);
 static void configure_remote_session(PGconn *conn);
 static void do_sql_command(PGconn *conn, const char *sql);
+static void do_sql_send_command(PGconn *conn, const char *sql);
 static void begin_remote_xact(ConnCacheEntry *entry);
 static void pgfdw_xact_callback(XactEvent event, void *arg);
 static void pgfdw_subxact_callback(SubXactEvent event,
@@ -91,6 +92,55 @@ static bool pgfdw_exec_cleanup_query(PGconn *conn, const char *query,
 						 bool ignore_errors);
 static bool pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime,
 						 PGresult **result);
+
+static int DistributedTransactionCount;
+static int DistributedTransactionParticipantsCount;
+static char* DistributedTransactionGid;
+
+/* Parallel send of sql statement to all paritcipants nodes
+ * and wait status
+ */
+static bool
+BroadcastStatement(char const * sql, unsigned expectedStatus)
+{
+	HASH_SEQ_STATUS scan;
+	ConnCacheEntry *entry;
+	bool		allOk = true;
+
+	hash_seq_init(&scan, ConnectionHash);
+	while ((entry = (ConnCacheEntry *) hash_seq_search(&scan)))
+	{
+		if (entry->xact_depth > 0)
+		{
+			do_sql_send_command(entry->conn, sql);
+		}
+	}
+
+	hash_seq_init(&scan, ConnectionHash);
+	while ((entry = (ConnCacheEntry *) hash_seq_search(&scan)))
+	{
+		if (entry->xact_depth > 0)
+		{
+			PGresult   *result = PQgetResult(entry->conn);
+
+			if (PQresultStatus(result) != expectedStatus)
+			{
+				elog(WARNING, "Failed command %s: status=%d, expected status=%d", sql, PQresultStatus(result), expectedStatus);
+				pgfdw_report_error(ERROR, result, entry->conn, true, sql);
+				allOk = false;
+			}
+			PQclear(result);
+			PQgetResult(entry->conn);	/* consume NULL result */
+		}
+	}
+	return allOk;
+}
+
+static bool
+BroadcastCommand(char const * sql)
+{
+	return BroadcastStatement(sql, PGRES_COMMAND_OK);
+}
 
 
 /*
@@ -403,6 +453,19 @@ do_sql_command(PGconn *conn, const char *sql)
 	PQclear(res);
 }
 
+static void
+do_sql_send_command(PGconn *conn, const char *sql)
+{
+	if (PQsendQuery(conn, sql) != PGRES_COMMAND_OK)
+	{
+		PGresult   *res = PQgetResult(conn);
+
+		elog(WARNING, "Failed to send command %s", sql);
+		pgfdw_report_error(ERROR, res, conn, true, sql);
+		PQclear(res);
+	}
+}
+
 /*
  * Start remote transaction or subtransaction, if needed.
  *
@@ -428,12 +491,15 @@ begin_remote_xact(ConnCacheEntry *entry)
 
 		if (IsolationIsSerializable())
 			sql = "START TRANSACTION ISOLATION LEVEL SERIALIZABLE";
-		else
+		else if (UseRepeatableRead)
 			sql = "START TRANSACTION ISOLATION LEVEL REPEATABLE READ";
+		else
+			sql = "START TRANSACTION";
 		entry->changing_xact_state = true;
 		do_sql_command(entry->conn, sql);
 		entry->xact_depth = 1;
 		entry->changing_xact_state = false;
+		DistributedTransactionParticipantsCount += 1;
 	}
 
 	/*
@@ -651,10 +717,22 @@ pgfdw_xact_callback(XactEvent event, void *arg)
 {
 	HASH_SEQ_STATUS scan;
 	ConnCacheEntry *entry;
+	bool two_phase_commit;
 
 	/* Quick exit if no connections were touched in this transaction. */
 	if (!xact_got_connection)
 		return;
+
+	/* Check if we need to perform 2PC commit: number of paritcipants should be greater than 1 */
+	two_phase_commit = Use2PC
+		&& (TransactionIdIsValid(GetCurrentTransactionIdIfAny()) + DistributedTransactionParticipantsCount) > 1;
+
+	if (two_phase_commit &&
+		(event == XACT_EVENT_PARALLEL_COMMIT || event == XACT_EVENT_COMMIT) &&
+		!BroadcastCommand(psprintf("COMMIT PREPARED '%s'", DistributedTransactionGid)))
+	{
+		elog(WARNING, "Failed to send commit prepared for %s to all participantss", DistributedTransactionGid);
+	}
 
 	/*
 	 * Scan all connection cache entries to find open remote transactions, and
@@ -688,10 +766,13 @@ pgfdw_xact_callback(XactEvent event, void *arg)
 					 */
 					pgfdw_reject_incomplete_xact_state_change(entry);
 
-					/* Commit all remote transactions during pre-commit */
-					entry->changing_xact_state = true;
-					do_sql_command(entry->conn, "COMMIT TRANSACTION");
-					entry->changing_xact_state = false;
+					if (!two_phase_commit)
+					{
+						/* Commit all remote transactions during pre-commit */
+						entry->changing_xact_state = true;
+						do_sql_command(entry->conn, "COMMIT TRANSACTION");
+						entry->changing_xact_state = false;
+					}
 
 					/*
 					 * If there were any errors in subtransactions, and we
@@ -715,6 +796,13 @@ pgfdw_xact_callback(XactEvent event, void *arg)
 					}
 					entry->have_prep_stmt = false;
 					entry->have_error = false;
+
+					if (two_phase_commit)
+					{
+						/* Do not reset xact_depth and break connection: we still need them for second phase
+						 */
+						continue;
+					}
 					break;
 				case XACT_EVENT_PRE_PREPARE:
 
@@ -734,8 +822,11 @@ pgfdw_xact_callback(XactEvent event, void *arg)
 				case XACT_EVENT_PARALLEL_COMMIT:
 				case XACT_EVENT_COMMIT:
 				case XACT_EVENT_PREPARE:
-					/* Pre-commit should have closed the open transaction */
-					elog(ERROR, "missed cleaning up connection during pre-commit");
+					if (!two_phase_commit)
+					{
+						/* Pre-commit should have closed the open transaction */
+						elog(ERROR, "missed cleaning up connection during pre-commit");
+					}
 					break;
 				case XACT_EVENT_PARALLEL_ABORT:
 				case XACT_EVENT_ABORT:
@@ -819,6 +910,30 @@ pgfdw_xact_callback(XactEvent event, void *arg)
 		}
 	}
 
+	/* In case of 2PC broadcast PREPARE TRANSACTION statement.
+	 * We are using BroadcasrCommand instead of sending them in the connection
+	 * iterator above because we want to process them in parallel
+	 */
+	if (two_phase_commit &&
+		(event == XACT_EVENT_PARALLEL_PRE_COMMIT|| event == XACT_EVENT_PRE_COMMIT))
+	{
+		DistributedTransactionGid = psprintf("%d:%d:%lld:%lld:%d",
+											 MyProcPid,
+											 ++DistributedTransactionCount,
+											 (long long)GetSystemIdentifier(),
+											 (long long)GetCurrentTransactionId(),
+											 DistributedTransactionParticipantsCount);
+		if (!BroadcastCommand(psprintf("PREPARE TRANSACTION '%s'", DistributedTransactionGid)))
+		{
+			BroadcastCommand(psprintf("ROLLBACK PREPARED '%s'", DistributedTransactionGid));
+			ereport(ERROR,
+					(errcode(ERRCODE_TRANSACTION_ROLLBACK),
+					 errmsg("Transaction %s was aborted at one ofparticipants", DistributedTransactionGid)));
+		}
+		return;
+	}
+
+
 	/*
 	 * Regardless of the event type, we can now mark ourselves as out of the
 	 * transaction.  (Note: if we are here during PRE_COMMIT or PRE_PREPARE,
@@ -828,6 +943,9 @@ pgfdw_xact_callback(XactEvent event, void *arg)
 
 	/* Also reset cursor numbering for next transaction */
 	cursor_number = 0;
+
+	DistributedTransactionParticipantsCount = 0;
+	DistributedTransactionGid = NULL;
 }
 
 /*

@@ -42,6 +42,8 @@
 #include "utils/sampling.h"
 #include "utils/selfuncs.h"
 
+void _PG_init(void);
+
 PG_MODULE_MAGIC;
 
 /* Default CPU cost to start up a foreign query. */
@@ -52,6 +54,9 @@ PG_MODULE_MAGIC;
 
 /* If no remote estimates, assume a sort costs 20% extra */
 #define DEFAULT_FDW_SORT_MULTIPLIER 1.2
+
+bool Use2PC;
+bool UseRepeatableRead;
 
 /*
  * Indexes of FDW-private information stored in fdw_private lists.
@@ -5170,4 +5175,17 @@ find_em_expr_for_rel(EquivalenceClass *ec, RelOptInfo *rel)
 
 	/* We didn't find any suitable equivalence class expression */
 	return NULL;
+}
+
+void
+_PG_init(void)
+{
+	DefineCustomBoolVariable("postgres_fdw.use_2pc",
+							 "Use two phase commit for distributed transactions", NULL,
+							 &Use2PC, false, PGC_USERSET, 0, NULL,
+							 NULL, NULL);
+	DefineCustomBoolVariable("postgres_fdw.use_repeatable_read",
+							 "Use repeatable read isilation error for remote transactions", NULL,
+							 &UseRepeatableRead, true, PGC_USERSET, 0, NULL,
+							 NULL, NULL);
 }
