@@ -365,6 +365,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>	DefACLOptionList
 %type <ival>	import_qualification_type
 %type <importqual> import_qualification
+%type <node>	vacuum_relation
 
 %type <list>	stmtblock stmtmulti
 				OptTableElementList TableElementList OptInherit definition
@@ -396,6 +397,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				transform_element_list transform_type_list
 				TriggerTransitions TriggerReferencing
 				publication_name_list
+				vacuum_relation_list opt_vacuum_relation_list
 
 %type <list>	group_by_list
 %type <node>	group_by_item empty_grouping_set rollup_clause cube_clause
@@ -575,7 +577,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <str>			part_strategy
 %type <partelem>	part_elem
 %type <list>		part_params
-%type <partboundspec> ForValues
+%type <partboundspec> PartitionBoundSpec
 %type <node>		partbound_datum PartitionRangeDatum
 %type <list>		partbound_datum_list range_datum_list
 
@@ -1980,7 +1982,7 @@ alter_table_cmds:
 
 partition_cmd:
 			/* ALTER TABLE <name> ATTACH PARTITION <table_name> FOR VALUES */
-			ATTACH PARTITION qualified_name ForValues
+			ATTACH PARTITION qualified_name PartitionBoundSpec
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
 					PartitionCmd *cmd = makeNode(PartitionCmd);
@@ -2075,6 +2077,22 @@ alter_table_cmd:
 					AlterTableCmd *n = makeNode(AlterTableCmd);
 					n->subtype = AT_SetStatistics;
 					n->name = $3;
+					n->def = (Node *) makeInteger($6);
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> ALTER [COLUMN] <colnum> SET STATISTICS <SignedIconst> */
+			| ALTER opt_column Iconst SET STATISTICS SignedIconst
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+
+					if ($3 <= 0 || $3 > PG_INT16_MAX)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("column number must be in range from 1 to %d", PG_INT16_MAX),
+								 parser_errposition(@3)));
+
+					n->subtype = AT_SetStatistics;
+					n->num = (int16) $3;
 					n->def = (Node *) makeInteger($6);
 					$$ = (Node *)n;
 				}
@@ -2619,13 +2637,14 @@ alter_identity_column_option:
 				}
 		;
 
-ForValues:
+PartitionBoundSpec:
 			/* a LIST partition */
 			FOR VALUES IN_P '(' partbound_datum_list ')'
 				{
 					PartitionBoundSpec *n = makeNode(PartitionBoundSpec);
 
 					n->strategy = PARTITION_STRATEGY_LIST;
+					n->is_default = false;
 					n->listdatums = $5;
 					n->location = @3;
 
@@ -2638,9 +2657,21 @@ ForValues:
 					PartitionBoundSpec *n = makeNode(PartitionBoundSpec);
 
 					n->strategy = PARTITION_STRATEGY_RANGE;
+					n->is_default = false;
 					n->lowerdatums = $5;
 					n->upperdatums = $9;
 					n->location = @3;
+
+					$$ = n;
+				}
+
+			/* a DEFAULT partition */
+			| DEFAULT
+				{
+					PartitionBoundSpec *n = makeNode(PartitionBoundSpec);
+
+					n->is_default = true;
+					n->location = @1;
 
 					$$ = n;
 				}
@@ -3114,7 +3145,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					$$ = (Node *)n;
 				}
 		| CREATE OptTemp TABLE qualified_name PARTITION OF qualified_name
-			OptTypedTableElementList ForValues OptPartitionSpec OptWith
+			OptTypedTableElementList PartitionBoundSpec OptPartitionSpec OptWith
 			OnCommitOption OptTableSpace
 				{
 					CreateStmt *n = makeNode(CreateStmt);
@@ -3133,7 +3164,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					$$ = (Node *)n;
 				}
 		| CREATE OptTemp TABLE IF_P NOT EXISTS qualified_name PARTITION OF
-			qualified_name OptTypedTableElementList ForValues OptPartitionSpec
+			qualified_name OptTypedTableElementList PartitionBoundSpec OptPartitionSpec
 			OptWith OnCommitOption OptTableSpace
 				{
 					CreateStmt *n = makeNode(CreateStmt);
@@ -4848,7 +4879,7 @@ CreateForeignTableStmt:
 					$$ = (Node *) n;
 				}
 		| CREATE FOREIGN TABLE qualified_name
-			PARTITION OF qualified_name OptTypedTableElementList ForValues
+			PARTITION OF qualified_name OptTypedTableElementList PartitionBoundSpec
 			SERVER name create_generic_options
 				{
 					CreateForeignTableStmt *n = makeNode(CreateForeignTableStmt);
@@ -4869,7 +4900,7 @@ CreateForeignTableStmt:
 					$$ = (Node *) n;
 				}
 		| CREATE FOREIGN TABLE IF_P NOT EXISTS qualified_name
-			PARTITION OF qualified_name OptTypedTableElementList ForValues
+			PARTITION OF qualified_name OptTypedTableElementList PartitionBoundSpec
 			SERVER name create_generic_options
 				{
 					CreateForeignTableStmt *n = makeNode(CreateForeignTableStmt);
@@ -10118,7 +10149,7 @@ cluster_index_specification:
  *
  *****************************************************************************/
 
-VacuumStmt: VACUUM opt_full opt_freeze opt_verbose
+VacuumStmt: VACUUM opt_full opt_freeze opt_verbose opt_vacuum_relation_list
 				{
 					VacuumStmt *n = makeNode(VacuumStmt);
 					n->options = VACOPT_VACUUM;
@@ -10128,22 +10159,7 @@ VacuumStmt: VACUUM opt_full opt_freeze opt_verbose
 						n->options |= VACOPT_FREEZE;
 					if ($4)
 						n->options |= VACOPT_VERBOSE;
-					n->relation = NULL;
-					n->va_cols = NIL;
-					$$ = (Node *)n;
-				}
-			| VACUUM opt_full opt_freeze opt_verbose qualified_name
-				{
-					VacuumStmt *n = makeNode(VacuumStmt);
-					n->options = VACOPT_VACUUM;
-					if ($2)
-						n->options |= VACOPT_FULL;
-					if ($3)
-						n->options |= VACOPT_FREEZE;
-					if ($4)
-						n->options |= VACOPT_VERBOSE;
-					n->relation = $5;
-					n->va_cols = NIL;
+					n->rels = $5;
 					$$ = (Node *)n;
 				}
 			| VACUUM opt_full opt_freeze opt_verbose AnalyzeStmt
@@ -10158,22 +10174,11 @@ VacuumStmt: VACUUM opt_full opt_freeze opt_verbose
 						n->options |= VACOPT_VERBOSE;
 					$$ = (Node *)n;
 				}
-			| VACUUM '(' vacuum_option_list ')'
+			| VACUUM '(' vacuum_option_list ')' opt_vacuum_relation_list
 				{
 					VacuumStmt *n = makeNode(VacuumStmt);
 					n->options = VACOPT_VACUUM | $3;
-					n->relation = NULL;
-					n->va_cols = NIL;
-					$$ = (Node *) n;
-				}
-			| VACUUM '(' vacuum_option_list ')' qualified_name opt_name_list
-				{
-					VacuumStmt *n = makeNode(VacuumStmt);
-					n->options = VACOPT_VACUUM | $3;
-					n->relation = $5;
-					n->va_cols = $6;
-					if (n->va_cols != NIL)	/* implies analyze */
-						n->options |= VACOPT_ANALYZE;
+					n->rels = $5;
 					$$ = (Node *) n;
 				}
 		;
@@ -10200,25 +10205,13 @@ vacuum_option_elem:
 				}
 		;
 
-AnalyzeStmt:
-			analyze_keyword opt_verbose
+AnalyzeStmt: analyze_keyword opt_verbose opt_vacuum_relation_list
 				{
 					VacuumStmt *n = makeNode(VacuumStmt);
 					n->options = VACOPT_ANALYZE;
 					if ($2)
 						n->options |= VACOPT_VERBOSE;
-					n->relation = NULL;
-					n->va_cols = NIL;
-					$$ = (Node *)n;
-				}
-			| analyze_keyword opt_verbose qualified_name opt_name_list
-				{
-					VacuumStmt *n = makeNode(VacuumStmt);
-					n->options = VACOPT_ANALYZE;
-					if ($2)
-						n->options |= VACOPT_VERBOSE;
-					n->relation = $3;
-					n->va_cols = $4;
+					n->rels = $3;
 					$$ = (Node *)n;
 				}
 		;
@@ -10243,6 +10236,25 @@ opt_freeze: FREEZE									{ $$ = TRUE; }
 
 opt_name_list:
 			'(' name_list ')'						{ $$ = $2; }
+			| /*EMPTY*/								{ $$ = NIL; }
+		;
+
+vacuum_relation:
+			qualified_name opt_name_list
+				{
+					$$ = (Node *) makeVacuumRelation($1, InvalidOid, $2);
+				}
+		;
+
+vacuum_relation_list:
+			vacuum_relation
+					{ $$ = list_make1($1); }
+			| vacuum_relation_list ',' vacuum_relation
+					{ $$ = lappend($1, $3); }
+		;
+
+opt_vacuum_relation_list:
+			vacuum_relation_list					{ $$ = $1; }
 			| /*EMPTY*/								{ $$ = NIL; }
 		;
 

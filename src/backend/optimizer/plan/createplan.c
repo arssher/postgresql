@@ -250,7 +250,8 @@ static Plan *prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
 static EquivalenceMember *find_ec_member_for_tle(EquivalenceClass *ec,
 					   TargetEntry *tle,
 					   Relids relids);
-static Sort *make_sort_from_pathkeys(Plan *lefttree, List *pathkeys);
+static Sort *make_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
+						Relids relids);
 static Sort *make_sort_from_groupcols(List *groupcls,
 						 AttrNumber *grpColIdx,
 						 Plan *lefttree);
@@ -267,7 +268,7 @@ static Unique *make_unique_from_sortclauses(Plan *lefttree, List *distinctList);
 static Unique *make_unique_from_pathkeys(Plan *lefttree,
 						  List *pathkeys, int numCols);
 static Gather *make_gather(List *qptlist, List *qpqual,
-			int nworkers, bool single_copy, Plan *subplan);
+			int nworkers, int rescan_param, bool single_copy, Plan *subplan);
 static SetOp *make_setop(SetOpCmd cmd, SetOpStrategy strategy, Plan *lefttree,
 		   List *distinctList, AttrNumber flagColIdx, int firstFlag,
 		   long numGroups);
@@ -1471,6 +1472,7 @@ create_gather_plan(PlannerInfo *root, GatherPath *best_path)
 	gather_plan = make_gather(tlist,
 							  NIL,
 							  best_path->num_workers,
+							  SS_assign_special_param(root),
 							  best_path->single_copy,
 							  subplan);
 
@@ -1504,6 +1506,9 @@ create_gather_merge_plan(PlannerInfo *root, GatherMergePath *best_path)
 	gm_plan->plan.targetlist = tlist;
 	gm_plan->num_workers = best_path->num_workers;
 	copy_generic_path_info(&gm_plan->plan, &best_path->path);
+
+	/* Assign the rescan Param. */
+	gm_plan->rescan_param = SS_assign_special_param(root);
 
 	/* Gather Merge is pointless with no pathkeys; use Gather instead. */
 	Assert(pathkeys != NIL);
@@ -1648,7 +1653,7 @@ create_sort_plan(PlannerInfo *root, SortPath *best_path, int flags)
 	subplan = create_plan_recurse(root, best_path->subpath,
 								  flags | CP_SMALL_TLIST);
 
-	plan = make_sort_from_pathkeys(subplan, best_path->path.pathkeys);
+	plan = make_sort_from_pathkeys(subplan, best_path->path.pathkeys, NULL);
 
 	copy_generic_path_info(&plan->plan, (Path *) best_path);
 
@@ -3767,6 +3772,8 @@ create_mergejoin_plan(PlannerInfo *root,
 	ListCell   *lc;
 	ListCell   *lop;
 	ListCell   *lip;
+	Path	   *outer_path = best_path->jpath.outerjoinpath;
+	Path	   *inner_path = best_path->jpath.innerjoinpath;
 
 	/*
 	 * MergeJoin can project, so we don't have to demand exact tlists from the
@@ -3830,8 +3837,10 @@ create_mergejoin_plan(PlannerInfo *root,
 	 */
 	if (best_path->outersortkeys)
 	{
+		Relids		outer_relids = outer_path->parent->relids;
 		Sort	   *sort = make_sort_from_pathkeys(outer_plan,
-												   best_path->outersortkeys);
+												   best_path->outersortkeys,
+												   outer_relids);
 
 		label_sort_with_costsize(root, sort, -1.0);
 		outer_plan = (Plan *) sort;
@@ -3842,8 +3851,10 @@ create_mergejoin_plan(PlannerInfo *root,
 
 	if (best_path->innersortkeys)
 	{
+		Relids		inner_relids = inner_path->parent->relids;
 		Sort	   *sort = make_sort_from_pathkeys(inner_plan,
-												   best_path->innersortkeys);
+												   best_path->innersortkeys,
+												   inner_relids);
 
 		label_sort_with_costsize(root, sort, -1.0);
 		inner_plan = (Plan *) sort;
@@ -4922,7 +4933,11 @@ bitmap_subplan_mark_shared(Plan *plan)
 		bitmap_subplan_mark_shared(
 								   linitial(((BitmapAnd *) plan)->bitmapplans));
 	else if (IsA(plan, BitmapOr))
+	{
 		((BitmapOr *) plan)->isshared = true;
+		bitmap_subplan_mark_shared(
+								   linitial(((BitmapOr *) plan)->bitmapplans));
+	}
 	else if (IsA(plan, BitmapIndexScan))
 		((BitmapIndexScan *) plan)->isshared = true;
 	else
@@ -5521,8 +5536,9 @@ make_sort(Plan *lefttree, int numCols,
  * the output parameters *p_numsortkeys etc.
  *
  * When looking for matches to an EquivalenceClass's members, we will only
- * consider child EC members if they match 'relids'.  This protects against
- * possible incorrect matches to child expressions that contain no Vars.
+ * consider child EC members if they belong to given 'relids'.  This protects
+ * against possible incorrect matches to child expressions that contain no
+ * Vars.
  *
  * If reqColIdx isn't NULL then it contains sort key column numbers that
  * we should match.  This is used when making child plans for a MergeAppend;
@@ -5677,11 +5693,11 @@ prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
 					continue;
 
 				/*
-				 * Ignore child members unless they match the rel being
+				 * Ignore child members unless they belong to the rel being
 				 * sorted.
 				 */
 				if (em->em_is_child &&
-					!bms_equal(em->em_relids, relids))
+					!bms_is_subset(em->em_relids, relids))
 					continue;
 
 				sortexpr = em->em_expr;
@@ -5765,7 +5781,7 @@ prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
  * find_ec_member_for_tle
  *		Locate an EquivalenceClass member matching the given TLE, if any
  *
- * Child EC members are ignored unless they match 'relids'.
+ * Child EC members are ignored unless they belong to given 'relids'.
  */
 static EquivalenceMember *
 find_ec_member_for_tle(EquivalenceClass *ec,
@@ -5793,10 +5809,10 @@ find_ec_member_for_tle(EquivalenceClass *ec,
 			continue;
 
 		/*
-		 * Ignore child members unless they match the rel being sorted.
+		 * Ignore child members unless they belong to the rel being sorted.
 		 */
 		if (em->em_is_child &&
-			!bms_equal(em->em_relids, relids))
+			!bms_is_subset(em->em_relids, relids))
 			continue;
 
 		/* Match if same expression (after stripping relabel) */
@@ -5817,9 +5833,10 @@ find_ec_member_for_tle(EquivalenceClass *ec,
  *
  *	  'lefttree' is the node which yields input tuples
  *	  'pathkeys' is the list of pathkeys by which the result is to be sorted
+ *	  'relids' is the set of relations required by prepare_sort_from_pathkeys()
  */
 static Sort *
-make_sort_from_pathkeys(Plan *lefttree, List *pathkeys)
+make_sort_from_pathkeys(Plan *lefttree, List *pathkeys, Relids relids)
 {
 	int			numsortkeys;
 	AttrNumber *sortColIdx;
@@ -5829,7 +5846,7 @@ make_sort_from_pathkeys(Plan *lefttree, List *pathkeys)
 
 	/* Compute sort column info, and adjust lefttree as needed */
 	lefttree = prepare_sort_from_pathkeys(lefttree, pathkeys,
-										  NULL,
+										  relids,
 										  NULL,
 										  false,
 										  &numsortkeys,
@@ -6238,6 +6255,7 @@ static Gather *
 make_gather(List *qptlist,
 			List *qpqual,
 			int nworkers,
+			int rescan_param,
 			bool single_copy,
 			Plan *subplan)
 {
@@ -6249,6 +6267,7 @@ make_gather(List *qptlist,
 	plan->lefttree = subplan;
 	plan->righttree = NULL;
 	node->num_workers = nworkers;
+	node->rescan_param = rescan_param;
 	node->single_copy = single_copy;
 	node->invisible = false;
 

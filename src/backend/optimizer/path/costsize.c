@@ -127,6 +127,7 @@ bool		enable_material = true;
 bool		enable_mergejoin = true;
 bool		enable_hashjoin = true;
 bool		enable_gathermerge = true;
+bool		enable_partition_wise_join = false;
 
 typedef struct
 {
@@ -3632,11 +3633,14 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
 	else if (IsA(node, ArrayCoerceExpr))
 	{
 		ArrayCoerceExpr *acoerce = (ArrayCoerceExpr *) node;
-		Node	   *arraynode = (Node *) acoerce->arg;
+		QualCost	perelemcost;
 
-		if (OidIsValid(acoerce->elemfuncid))
-			context->total.per_tuple += get_func_cost(acoerce->elemfuncid) *
-				cpu_operator_cost * estimate_array_length(arraynode);
+		cost_qual_eval_node(&perelemcost, (Node *) acoerce->elemexpr,
+							context->root);
+		context->total.startup += perelemcost.startup;
+		if (perelemcost.per_tuple > 0)
+			context->total.per_tuple += perelemcost.per_tuple *
+				estimate_array_length((Node *) acoerce->arg);
 	}
 	else if (IsA(node, RowCompareExpr))
 	{
@@ -4550,15 +4554,11 @@ set_subquery_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 {
 	PlannerInfo *subroot = rel->subroot;
 	RelOptInfo *sub_final_rel;
-	RangeTblEntry *rte PG_USED_FOR_ASSERTS_ONLY;
 	ListCell   *lc;
 
 	/* Should only be applied to base relations that are subqueries */
 	Assert(rel->relid > 0);
-#ifdef USE_ASSERT_CHECKING
-	rte = planner_rt_fetch(rel->relid, root);
-	Assert(rte->rtekind == RTE_SUBQUERY);
-#endif
+	Assert(planner_rt_fetch(rel->relid, root)->rtekind == RTE_SUBQUERY);
 
 	/*
 	 * Copy raw number of output rows from subquery.  All of its paths should
@@ -4670,14 +4670,9 @@ set_function_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 void
 set_tablefunc_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 {
-	RangeTblEntry *rte PG_USED_FOR_ASSERTS_ONLY;
-
 	/* Should only be applied to base relations that are functions */
 	Assert(rel->relid > 0);
-#ifdef USE_ASSERT_CHECKING
-	rte = planner_rt_fetch(rel->relid, root);
-	Assert(rte->rtekind == RTE_TABLEFUNC);
-#endif
+	Assert(planner_rt_fetch(rel->relid, root)->rtekind == RTE_TABLEFUNC);
 
 	rel->tuples = 100;
 

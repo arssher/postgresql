@@ -3,7 +3,7 @@ doc/src/sgml/ref/drop_tstemplate.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="SQL-DROPTSTEMPLATE">
+<refentry id="sql-droptstemplate">
  <indexterm zone="sql-droptstemplate">
   <primary>DROP TEXT SEARCH TEMPLATE</primary>
  </indexterm>
@@ -21,7 +21,7 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-DROP TEXT SEARCH TEMPLATE [ IF EXISTS ] <replaceable class="PARAMETER">name</replaceable> [ CASCADE | RESTRICT ]
+DROP TEXT SEARCH TEMPLATE [ IF EXISTS ] <replaceable class="parameter">name</replaceable> [ CASCADE | RESTRICT ]
 </synopsis>
  </refsynopsisdiv>
 
@@ -93,7 +93,7 @@ DROP TEXT SEARCH TEMPLATE thesaurus;
 </programlisting>
 
    This command will not succeed if there are any existing text search
-   dictionaries that use the template.  Add <literal>CASCADE</> to
+   dictionaries that use the template.  Add <literal>CASCADE</literal> to
    drop such dictionaries along with the template.
   </para>
  </refsect1>

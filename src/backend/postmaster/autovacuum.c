@@ -79,6 +79,7 @@
 #include "lib/ilist.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
+#include "nodes/makefuncs.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/fork_process.h"
@@ -436,7 +437,7 @@ AutoVacLauncherMain(int argc, char *argv[])
 	am_autovacuum_launcher = true;
 
 	/* Identify myself via ps */
-	init_ps_display("autovacuum launcher process", "", "", "");
+	init_ps_display(pgstat_get_backend_desc(B_AUTOVAC_LAUNCHER), "", "", "");
 
 	ereport(DEBUG1,
 			(errmsg("autovacuum launcher started")));
@@ -1519,7 +1520,7 @@ AutoVacWorkerMain(int argc, char *argv[])
 	am_autovacuum_worker = true;
 
 	/* Identify myself via ps */
-	init_ps_display("autovacuum worker process", "", "", "");
+	init_ps_display(pgstat_get_backend_desc(B_AUTOVAC_WORKER), "", "", "");
 
 	SetProcessingMode(InitProcessing);
 
@@ -2444,8 +2445,10 @@ do_autovacuum(void)
 		 */
 		PG_TRY();
 		{
+			/* Use PortalContext for any per-table allocations */
+			MemoryContextSwitchTo(PortalContext);
+
 			/* have at it */
-			MemoryContextSwitchTo(TopTransactionContext);
 			autovacuum_do_vac_analyze(tab, bstrategy);
 
 			/*
@@ -2481,6 +2484,9 @@ do_autovacuum(void)
 			RESUME_INTERRUPTS();
 		}
 		PG_END_TRY();
+
+		/* Make sure we're back in AutovacMemCxt */
+		MemoryContextSwitchTo(AutovacMemCxt);
 
 		did_vacuum = true;
 
@@ -2533,8 +2539,7 @@ deleted:
 		perform_work_item(workitem);
 
 		/*
-		 * Check for config changes before acquiring lock for further
-		 * jobs.
+		 * Check for config changes before acquiring lock for further jobs.
 		 */
 		CHECK_FOR_INTERRUPTS();
 		if (got_SIGHUP)
@@ -2605,6 +2610,7 @@ perform_work_item(AutoVacuumWorkItem *workitem)
 	 * must live in a long-lived memory context because we call vacuum and
 	 * analyze in different transactions.
 	 */
+	Assert(CurrentMemoryContext == AutovacMemCxt);
 
 	cur_relname = get_rel_name(workitem->avw_relation);
 	cur_nspname = get_namespace_name(get_rel_namespace(workitem->avw_relation));
@@ -2614,6 +2620,9 @@ perform_work_item(AutoVacuumWorkItem *workitem)
 
 	autovac_report_workitem(workitem, cur_nspname, cur_datname);
 
+	/* clean up memory before each work item */
+	MemoryContextResetAndDeleteChildren(PortalContext);
+
 	/*
 	 * We will abort the current work item if something errors out, and
 	 * continue with the next one; in particular, this happens if we are
@@ -2622,9 +2631,10 @@ perform_work_item(AutoVacuumWorkItem *workitem)
 	 */
 	PG_TRY();
 	{
-		/* have at it */
-		MemoryContextSwitchTo(TopTransactionContext);
+		/* Use PortalContext for any per-work-item allocations */
+		MemoryContextSwitchTo(PortalContext);
 
+		/* have at it */
 		switch (workitem->avw_type)
 		{
 			case AVW_BRINSummarizeRange:
@@ -2667,6 +2677,9 @@ perform_work_item(AutoVacuumWorkItem *workitem)
 		RESUME_INTERRUPTS();
 	}
 	PG_END_TRY();
+
+	/* Make sure we're back in AutovacMemCxt */
+	MemoryContextSwitchTo(AutovacMemCxt);
 
 	/* We intentionally do not set did_vacuum here */
 
@@ -3069,20 +3082,19 @@ relation_needs_vacanalyze(Oid relid,
 static void
 autovacuum_do_vac_analyze(autovac_table *tab, BufferAccessStrategy bstrategy)
 {
-	RangeVar	rangevar;
-
-	/* Set up command parameters --- use local variables instead of palloc */
-	MemSet(&rangevar, 0, sizeof(rangevar));
-
-	rangevar.schemaname = tab->at_nspname;
-	rangevar.relname = tab->at_relname;
-	rangevar.location = -1;
+	RangeVar   *rangevar;
+	VacuumRelation *rel;
+	List	   *rel_list;
 
 	/* Let pgstat know what we're doing */
 	autovac_report_activity(tab);
 
-	vacuum(tab->at_vacoptions, &rangevar, tab->at_relid, &tab->at_params, NIL,
-		   bstrategy, true);
+	/* Set up one VacuumRelation target, identified by OID, for vacuum() */
+	rangevar = makeRangeVar(tab->at_nspname, tab->at_relname, -1);
+	rel = makeVacuumRelation(rangevar, tab->at_relid, NIL);
+	rel_list = list_make1(rel);
+
+	vacuum(tab->at_vacoptions, rel_list, &tab->at_params, bstrategy, true);
 }
 
 /*

@@ -111,7 +111,7 @@ typedef struct Query
 
 	QuerySource querySource;	/* where did I come from? */
 
-	uint32		queryId;		/* query identifier (can be set by plugins) */
+	uint64		queryId;		/* query identifier (can be set by plugins) */
 
 	bool		canSetTag;		/* do I set the command result tag? */
 
@@ -797,6 +797,7 @@ typedef struct PartitionBoundSpec
 	NodeTag		type;
 
 	char		strategy;		/* see PARTITION_STRATEGY codes above */
+	bool		is_default;		/* is it a default partition bound? */
 
 	/* Partitioning info for LIST strategy: */
 	List	   *listdatums;		/* List of Consts (or A_Consts in raw tree) */
@@ -1025,6 +1026,11 @@ typedef struct RangeTblEntry
 	 * from the catalogs if 'relid' was supplied, but we'd still need these
 	 * for TupleDesc-based ENRs, so we might as well always store the type
 	 * info here).
+	 *
+	 * For ENRs only, we have to consider the possibility of dropped columns.
+	 * A dropped column is included in these lists, but it will have zeroes in
+	 * all three lists (as well as an empty-string entry in eref).  Testing
+	 * for zero coltype is the standard way to detect a dropped column.
 	 */
 	List	   *coltypes;		/* OID list of column type OIDs */
 	List	   *coltypmods;		/* integer list of column typmods */
@@ -1772,6 +1778,8 @@ typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
 	AlterTableType subtype;		/* Type of table alteration to apply */
 	char	   *name;			/* column, constraint, or trigger to act on,
 								 * or tablespace */
+	int16		num;			/* attribute number for columns referenced by
+								 * number */
 	RoleSpec   *newowner;
 	Node	   *def;			/* definition of new column, index,
 								 * constraint, or parent table */
@@ -3090,12 +3098,26 @@ typedef enum VacuumOption
 	VACOPT_DISABLE_PAGE_SKIPPING = 1 << 7	/* don't skip any pages */
 } VacuumOption;
 
+/*
+ * Info about a single target table of VACUUM/ANALYZE.
+ *
+ * If the OID field is set, it always identifies the table to process.
+ * Then the relation field can be NULL; if it isn't, it's used only to report
+ * failure to open/lock the relation.
+ */
+typedef struct VacuumRelation
+{
+	NodeTag		type;
+	RangeVar   *relation;		/* table name to process, or NULL */
+	Oid			oid;			/* table's OID; InvalidOid if not looked up */
+	List	   *va_cols;		/* list of column names, or NIL for all */
+} VacuumRelation;
+
 typedef struct VacuumStmt
 {
 	NodeTag		type;
 	int			options;		/* OR of VacuumOption flags */
-	RangeVar   *relation;		/* single table to process, or NULL */
-	List	   *va_cols;		/* list of column names, or NIL for all */
+	List	   *rels;			/* list of VacuumRelation, or NIL for all */
 } VacuumStmt;
 
 /* ----------------------

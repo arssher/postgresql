@@ -18,7 +18,6 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
 #include <unistd.h>
 #ifdef HAVE_SYS_SELECT_H
 #include <sys/select.h>
@@ -33,6 +32,7 @@
 #include "libpq/pqformat.h"
 #include "libpq/scram.h"
 #include "miscadmin.h"
+#include "port/pg_bswap.h"
 #include "replication/walsender.h"
 #include "storage/ipc.h"
 #include "utils/backend_random.h"
@@ -141,6 +141,12 @@ ULONG		(*__ldap_start_tls_sA) (
 #endif
 
 static int	CheckLDAPAuth(Port *port);
+
+/* LDAP_OPT_DIAGNOSTIC_MESSAGE is the newer spelling */
+#ifndef LDAP_OPT_DIAGNOSTIC_MESSAGE
+#define LDAP_OPT_DIAGNOSTIC_MESSAGE LDAP_OPT_ERROR_STRING
+#endif
+
 #endif							/* USE_LDAP */
 
 /*----------------------------------------------------------------
@@ -613,7 +619,7 @@ sendAuthRequest(Port *port, AuthRequest areq, char *extradata, int extralen)
 	CHECK_FOR_INTERRUPTS();
 
 	pq_beginmessage(&buf, 'R');
-	pq_sendint(&buf, (int32) areq, sizeof(int32));
+	pq_sendint32(&buf, (int32) areq);
 	if (extralen > 0)
 		pq_sendbytes(&buf, extradata, extralen);
 
@@ -2305,6 +2311,8 @@ CheckBSDAuth(Port *port, char *user)
  */
 #ifdef USE_LDAP
 
+static int errdetail_for_ldap(LDAP *ldap);
+
 /*
  * Initialize a connection to the LDAP server, including setting up
  * TLS if requested.
@@ -2331,9 +2339,11 @@ InitializeLDAPConnection(Port *port, LDAP **ldap)
 
 	if ((r = ldap_set_option(*ldap, LDAP_OPT_PROTOCOL_VERSION, &ldapversion)) != LDAP_SUCCESS)
 	{
-		ldap_unbind(*ldap);
 		ereport(LOG,
-				(errmsg("could not set LDAP protocol version: %s", ldap_err2string(r))));
+				(errmsg("could not set LDAP protocol version: %s",
+						ldap_err2string(r)),
+				 errdetail_for_ldap(*ldap)));
+		ldap_unbind(*ldap);
 		return STATUS_ERROR;
 	}
 
@@ -2360,18 +2370,18 @@ InitializeLDAPConnection(Port *port, LDAP **ldap)
 				 * should never happen since we import other files from
 				 * wldap32, but check anyway
 				 */
-				ldap_unbind(*ldap);
 				ereport(LOG,
 						(errmsg("could not load wldap32.dll")));
+				ldap_unbind(*ldap);
 				return STATUS_ERROR;
 			}
 			_ldap_start_tls_sA = (__ldap_start_tls_sA) GetProcAddress(ldaphandle, "ldap_start_tls_sA");
 			if (_ldap_start_tls_sA == NULL)
 			{
-				ldap_unbind(*ldap);
 				ereport(LOG,
 						(errmsg("could not load function _ldap_start_tls_sA in wldap32.dll"),
 						 errdetail("LDAP over SSL is not supported on this platform.")));
+				ldap_unbind(*ldap);
 				return STATUS_ERROR;
 			}
 
@@ -2384,14 +2394,49 @@ InitializeLDAPConnection(Port *port, LDAP **ldap)
 		if ((r = _ldap_start_tls_sA(*ldap, NULL, NULL, NULL, NULL)) != LDAP_SUCCESS)
 #endif
 		{
-			ldap_unbind(*ldap);
 			ereport(LOG,
-					(errmsg("could not start LDAP TLS session: %s", ldap_err2string(r))));
+					(errmsg("could not start LDAP TLS session: %s",
+							ldap_err2string(r)),
+					 errdetail_for_ldap(*ldap)));
+			ldap_unbind(*ldap);
 			return STATUS_ERROR;
 		}
 	}
 
 	return STATUS_OK;
+}
+
+/* Placeholders recognized by FormatSearchFilter.  For now just one. */
+#define LPH_USERNAME "$username"
+#define LPH_USERNAME_LEN (sizeof(LPH_USERNAME) - 1)
+
+/* Not all LDAP implementations define this. */
+#ifndef LDAP_NO_ATTRS
+#define LDAP_NO_ATTRS "1.1"
+#endif
+
+/*
+ * Return a newly allocated C string copied from "pattern" with all
+ * occurrences of the placeholder "$username" replaced with "user_name".
+ */
+static char *
+FormatSearchFilter(const char *pattern, const char *user_name)
+{
+	StringInfoData output;
+
+	initStringInfo(&output);
+	while (*pattern != '\0')
+	{
+		if (strncmp(pattern, LPH_USERNAME, LPH_USERNAME_LEN) == 0)
+		{
+			appendStringInfoString(&output, user_name);
+			pattern += LPH_USERNAME_LEN;
+		}
+		else
+			appendStringInfoChar(&output, *pattern++);
+	}
+
+	return output.data;
 }
 
 /*
@@ -2437,7 +2482,7 @@ CheckLDAPAuth(Port *port)
 		char	   *filter;
 		LDAPMessage *search_message;
 		LDAPMessage *entry;
-		char	   *attributes[2];
+		char	   *attributes[] = { LDAP_NO_ATTRS, NULL };
 		char	   *dn;
 		char	   *c;
 		int			count;
@@ -2458,6 +2503,7 @@ CheckLDAPAuth(Port *port)
 			{
 				ereport(LOG,
 						(errmsg("invalid character in user name for LDAP authentication")));
+				ldap_unbind(ldap);
 				pfree(passwd);
 				return STATUS_ERROR;
 			}
@@ -2474,18 +2520,21 @@ CheckLDAPAuth(Port *port)
 		{
 			ereport(LOG,
 					(errmsg("could not perform initial LDAP bind for ldapbinddn \"%s\" on server \"%s\": %s",
-							port->hba->ldapbinddn, port->hba->ldapserver, ldap_err2string(r))));
+							port->hba->ldapbinddn, port->hba->ldapserver,
+							ldap_err2string(r)),
+					 errdetail_for_ldap(ldap)));
+			ldap_unbind(ldap);
 			pfree(passwd);
 			return STATUS_ERROR;
 		}
 
-		/* Fetch just one attribute, else *all* attributes are returned */
-		attributes[0] = port->hba->ldapsearchattribute ? port->hba->ldapsearchattribute : "uid";
-		attributes[1] = NULL;
-
-		filter = psprintf("(%s=%s)",
-						  attributes[0],
-						  port->user_name);
+		/* Build a custom filter or a single attribute filter? */
+		if (port->hba->ldapsearchfilter)
+			filter = FormatSearchFilter(port->hba->ldapsearchfilter, port->user_name);
+		else if (port->hba->ldapsearchattribute)
+			filter = psprintf("(%s=%s)", port->hba->ldapsearchattribute, port->user_name);
+		else
+			filter = psprintf("(uid=%s)", port->user_name);
 
 		r = ldap_search_s(ldap,
 						  port->hba->ldapbasedn,
@@ -2499,7 +2548,9 @@ CheckLDAPAuth(Port *port)
 		{
 			ereport(LOG,
 					(errmsg("could not search LDAP for filter \"%s\" on server \"%s\": %s",
-							filter, port->hba->ldapserver, ldap_err2string(r))));
+							filter, port->hba->ldapserver, ldap_err2string(r)),
+					 errdetail_for_ldap(ldap)));
+			ldap_unbind(ldap);
 			pfree(passwd);
 			pfree(filter);
 			return STATUS_ERROR;
@@ -2521,6 +2572,7 @@ CheckLDAPAuth(Port *port)
 										  count,
 										  filter, port->hba->ldapserver, count)));
 
+			ldap_unbind(ldap);
 			pfree(passwd);
 			pfree(filter);
 			ldap_msgfree(search_message);
@@ -2536,7 +2588,10 @@ CheckLDAPAuth(Port *port)
 			(void) ldap_get_option(ldap, LDAP_OPT_ERROR_NUMBER, &error);
 			ereport(LOG,
 					(errmsg("could not get dn for the first entry matching \"%s\" on server \"%s\": %s",
-							filter, port->hba->ldapserver, ldap_err2string(error))));
+							filter, port->hba->ldapserver,
+							ldap_err2string(error)),
+					 errdetail_for_ldap(ldap)));
+			ldap_unbind(ldap);
 			pfree(passwd);
 			pfree(filter);
 			ldap_msgfree(search_message);
@@ -2552,12 +2607,9 @@ CheckLDAPAuth(Port *port)
 		r = ldap_unbind_s(ldap);
 		if (r != LDAP_SUCCESS)
 		{
-			int			error;
-
-			(void) ldap_get_option(ldap, LDAP_OPT_ERROR_NUMBER, &error);
 			ereport(LOG,
-					(errmsg("could not unbind after searching for user \"%s\" on server \"%s\": %s",
-							fulluser, port->hba->ldapserver, ldap_err2string(error))));
+					(errmsg("could not unbind after searching for user \"%s\" on server \"%s\"",
+							fulluser, port->hba->ldapserver)));
 			pfree(passwd);
 			pfree(fulluser);
 			return STATUS_ERROR;
@@ -2583,23 +2635,46 @@ CheckLDAPAuth(Port *port)
 							port->hba->ldapsuffix ? port->hba->ldapsuffix : "");
 
 	r = ldap_simple_bind_s(ldap, fulluser, passwd);
-	ldap_unbind(ldap);
 
 	if (r != LDAP_SUCCESS)
 	{
 		ereport(LOG,
 				(errmsg("LDAP login failed for user \"%s\" on server \"%s\": %s",
-						fulluser, port->hba->ldapserver, ldap_err2string(r))));
+						fulluser, port->hba->ldapserver, ldap_err2string(r)),
+				 errdetail_for_ldap(ldap)));
+		ldap_unbind(ldap);
 		pfree(passwd);
 		pfree(fulluser);
 		return STATUS_ERROR;
 	}
 
+	ldap_unbind(ldap);
 	pfree(passwd);
 	pfree(fulluser);
 
 	return STATUS_OK;
 }
+
+/*
+ * Add a detail error message text to the current error if one can be
+ * constructed from the LDAP 'diagnostic message'.
+ */
+static int
+errdetail_for_ldap(LDAP *ldap)
+{
+	char	   *message;
+	int			rc;
+
+	rc = ldap_get_option(ldap, LDAP_OPT_DIAGNOSTIC_MESSAGE, &message);
+	if (rc == LDAP_SUCCESS && message != NULL)
+	{
+		errdetail("LDAP diagnostics: %s", message);
+		ldap_memfree(message);
+	}
+
+	return 0;
+}
+
 #endif							/* USE_LDAP */
 
 
@@ -2667,7 +2742,7 @@ typedef struct
 #define RADIUS_ACCESS_ACCEPT	2
 #define RADIUS_ACCESS_REJECT	3
 
-/* RAIDUS attributes */
+/* RADIUS attributes */
 #define RADIUS_USER_NAME		1
 #define RADIUS_PASSWORD			2
 #define RADIUS_SERVICE_TYPE		6
@@ -2807,7 +2882,7 @@ PerformRadiusTransaction(char *server, char *secret, char *portstr, char *identi
 	radius_packet *receivepacket = &radius_recv_pack;
 	char	   *radius_buffer = (char *) &radius_send_pack;
 	char	   *receive_buffer = (char *) &radius_recv_pack;
-	int32		service = htonl(RADIUS_AUTHENTICATE_ONLY);
+	int32		service = pg_hton32(RADIUS_AUTHENTICATE_ONLY);
 	uint8	   *cryptvector;
 	int			encryptedpasswordlen;
 	uint8		encryptedpassword[RADIUS_MAX_PASSWORD_LENGTH];
@@ -2915,7 +2990,7 @@ PerformRadiusTransaction(char *server, char *secret, char *portstr, char *identi
 
 	/* Length needs to be in network order on the wire */
 	packetlength = packet->length;
-	packet->length = htons(packet->length);
+	packet->length = pg_hton16(packet->length);
 
 	sock = socket(serveraddrs[0].ai_family, SOCK_DGRAM, 0);
 	if (sock == PGINVALID_SOCKET)
@@ -3041,19 +3116,19 @@ PerformRadiusTransaction(char *server, char *secret, char *portstr, char *identi
 		}
 
 #ifdef HAVE_IPV6
-		if (remoteaddr.sin6_port != htons(port))
+		if (remoteaddr.sin6_port != pg_hton16(port))
 #else
-		if (remoteaddr.sin_port != htons(port))
+		if (remoteaddr.sin_port != pg_hton16(port))
 #endif
 		{
 #ifdef HAVE_IPV6
 			ereport(LOG,
 					(errmsg("RADIUS response from %s was sent from incorrect port: %d",
-							server, ntohs(remoteaddr.sin6_port))));
+							server, pg_ntoh16(remoteaddr.sin6_port))));
 #else
 			ereport(LOG,
 					(errmsg("RADIUS response from %s was sent from incorrect port: %d",
-							server, ntohs(remoteaddr.sin_port))));
+							server, pg_ntoh16(remoteaddr.sin_port))));
 #endif
 			continue;
 		}
@@ -3065,11 +3140,11 @@ PerformRadiusTransaction(char *server, char *secret, char *portstr, char *identi
 			continue;
 		}
 
-		if (packetlength != ntohs(receivepacket->length))
+		if (packetlength != pg_ntoh16(receivepacket->length))
 		{
 			ereport(LOG,
 					(errmsg("RADIUS response from %s has corrupt length: %d (actual length %d)",
-							server, ntohs(receivepacket->length), packetlength)));
+							server, pg_ntoh16(receivepacket->length), packetlength)));
 			continue;
 		}
 

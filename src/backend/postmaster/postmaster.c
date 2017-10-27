@@ -74,8 +74,6 @@
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <sys/param.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <netdb.h>
 #include <limits.h>
 
@@ -107,6 +105,7 @@
 #include "miscadmin.h"
 #include "pg_getopt.h"
 #include "pgstat.h"
+#include "port/pg_bswap.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/fork_process.h"
@@ -950,6 +949,9 @@ PostmasterMain(int argc, char *argv[])
 	 */
 	CreateDataDirLockFile(true);
 
+	/* read control file (error checking and contains config) */
+	LocalProcessControlFile(false);
+
 	/*
 	 * Initialize SSL library, if specified.
 	 */
@@ -1069,7 +1071,7 @@ PostmasterMain(int argc, char *argv[])
 								 "_postgresql._tcp.",
 								 NULL,
 								 NULL,
-								 htons(PostPortNumber),
+								 pg_hton16(PostPortNumber),
 								 0,
 								 NULL,
 								 NULL,
@@ -1963,7 +1965,7 @@ ProcessStartupPacket(Port *port, bool SSLdone)
 		return STATUS_ERROR;
 	}
 
-	len = ntohl(len);
+	len = pg_ntoh32(len);
 	len -= 4;
 
 	if (len < (int32) sizeof(ProtocolVersion) ||
@@ -1999,7 +2001,7 @@ ProcessStartupPacket(Port *port, bool SSLdone)
 	 * The first field is either a protocol version number or a special
 	 * request code.
 	 */
-	port->proto = proto = ntohl(*((ProtocolVersion *) buf));
+	port->proto = proto = pg_ntoh32(*((ProtocolVersion *) buf));
 
 	if (proto == CANCEL_REQUEST_CODE)
 	{
@@ -2278,8 +2280,8 @@ processCancelRequest(Port *port, void *pkt)
 	int			i;
 #endif
 
-	backendPID = (int) ntohl(canc->backendPID);
-	cancelAuthCode = (int32) ntohl(canc->cancelAuthCode);
+	backendPID = (int) pg_ntoh32(canc->backendPID);
+	cancelAuthCode = (int32) pg_ntoh32(canc->cancelAuthCode);
 
 	/*
 	 * See if we have a matching backend.  In the EXEC_BACKEND case, we can no
@@ -3114,8 +3116,9 @@ CleanupBackgroundWorker(int pid,
 			exitstatus = 0;
 #endif
 
-		snprintf(namebuf, MAXPGPATH, "%s: %s", _("worker process"),
-				 rw->rw_worker.bgw_name);
+		snprintf(namebuf, MAXPGPATH, _("background worker \"%s\""),
+				 rw->rw_worker.bgw_type);
+
 
 		if (!EXIT_STATUS_0(exitstatus))
 		{
@@ -3826,6 +3829,10 @@ PostmasterStateMachine(void)
 		ResetBackgroundWorkerCrashTimes();
 
 		shmem_exit(1);
+
+		/* re-read control file into local memory */
+		LocalProcessControlFile(true);
+
 		reset_shared(PostPortNumber);
 
 		StartupPID = StartupDataBase();
@@ -4259,14 +4266,14 @@ BackendInitialize(Port *port)
 	 *
 	 * For a walsender, the ps display is set in the following form:
 	 *
-	 * postgres: wal sender process <user> <host> <activity>
+	 * postgres: walsender <user> <host> <activity>
 	 *
-	 * To achieve that, we pass "wal sender process" as username and username
+	 * To achieve that, we pass "walsender" as username and username
 	 * as dbname to init_ps_display(). XXX: should add a new variant of
 	 * init_ps_display() to avoid abusing the parameters like this.
 	 */
 	if (am_walsender)
-		init_ps_display("wal sender process", port->user_name, remote_ps_data,
+		init_ps_display(pgstat_get_backend_desc(B_WAL_SENDER), port->user_name, remote_ps_data,
 						update_process_title ? "authentication" : "");
 	else
 		init_ps_display(port->user_name, port->database_name, remote_ps_data,
@@ -4804,6 +4811,12 @@ SubPostmasterMain(int argc, char *argv[])
 
 	/* Read in remaining GUC variables */
 	read_nondefault_variables();
+
+	/*
+	 * (re-)read control file, as it contains config. The postmaster will
+	 * already have read this, but this process doesn't know about that.
+	 */
+	LocalProcessControlFile(false);
 
 	/*
 	 * Reload any libraries that were preloaded by the postmaster.  Since we

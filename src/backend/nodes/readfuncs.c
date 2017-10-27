@@ -33,6 +33,7 @@
 #include "nodes/parsenodes.h"
 #include "nodes/plannodes.h"
 #include "nodes/readfuncs.h"
+#include "utils/builtins.h"
 
 
 /*
@@ -69,6 +70,12 @@
 	token = pg_strtok(&length);		/* skip :fldname */ \
 	token = pg_strtok(&length);		/* get field value */ \
 	local_node->fldname = atoui(token)
+
+/* Read an unsigned integer field (anything written using UINT64_FORMAT) */
+#define READ_UINT64_FIELD(fldname) \
+	token = pg_strtok(&length);		/* skip :fldname */ \
+	token = pg_strtok(&length);		/* get field value */ \
+	local_node->fldname = pg_strtouint64(token, NULL, 10)
 
 /* Read an long integer field (anything written as ":fldname %ld") */
 #define READ_LONG_FIELD(fldname) \
@@ -231,7 +238,7 @@ _readQuery(void)
 
 	READ_ENUM_FIELD(commandType, CmdType);
 	READ_ENUM_FIELD(querySource, QuerySource);
-	local_node->queryId = 0;	/* not saved in output format */
+	local_node->queryId = UINT64CONST(0);	/* not saved in output format */
 	READ_BOOL_FIELD(canSetTag);
 	READ_NODE_FIELD(utilityStmt);
 	READ_INT_FIELD(resultRelation);
@@ -892,11 +899,10 @@ _readArrayCoerceExpr(void)
 	READ_LOCALS(ArrayCoerceExpr);
 
 	READ_NODE_FIELD(arg);
-	READ_OID_FIELD(elemfuncid);
+	READ_NODE_FIELD(elemexpr);
 	READ_OID_FIELD(resulttype);
 	READ_INT_FIELD(resulttypmod);
 	READ_OID_FIELD(resultcollid);
-	READ_BOOL_FIELD(isExplicit);
 	READ_ENUM_FIELD(coerceformat, CoercionForm);
 	READ_LOCATION_FIELD(location);
 
@@ -1457,7 +1463,7 @@ _readPlannedStmt(void)
 	READ_LOCALS(PlannedStmt);
 
 	READ_ENUM_FIELD(commandType, CmdType);
-	READ_UINT_FIELD(queryId);
+	READ_UINT64_FIELD(queryId);
 	READ_BOOL_FIELD(hasReturning);
 	READ_BOOL_FIELD(hasModifyingCTE);
 	READ_BOOL_FIELD(canSetTag);
@@ -2163,6 +2169,7 @@ _readGather(void)
 	ReadCommonPlan(&local_node->plan);
 
 	READ_INT_FIELD(num_workers);
+	READ_INT_FIELD(rescan_param);
 	READ_BOOL_FIELD(single_copy);
 	READ_BOOL_FIELD(invisible);
 
@@ -2180,6 +2187,7 @@ _readGatherMerge(void)
 	ReadCommonPlan(&local_node->plan);
 
 	READ_INT_FIELD(num_workers);
+	READ_INT_FIELD(rescan_param);
 	READ_INT_FIELD(numCols);
 	READ_ATTRNUMBER_ARRAY(sortColIdx, local_node->numCols);
 	READ_OID_ARRAY(sortOperators, local_node->numCols);
@@ -2388,6 +2396,7 @@ _readPartitionBoundSpec(void)
 	READ_LOCALS(PartitionBoundSpec);
 
 	READ_CHAR_FIELD(strategy);
+	READ_BOOL_FIELD(is_default);
 	READ_NODE_FIELD(listdatums);
 	READ_NODE_FIELD(lowerdatums);
 	READ_NODE_FIELD(upperdatums);

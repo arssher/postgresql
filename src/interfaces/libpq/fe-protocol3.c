@@ -21,16 +21,15 @@
 #include "libpq-int.h"
 
 #include "mb/pg_wchar.h"
+#include "port/pg_bswap.h"
 
 #ifdef WIN32
 #include "win32.h"
 #else
 #include <unistd.h>
-#include <netinet/in.h>
 #ifdef HAVE_NETINET_TCP_H
 #include <netinet/tcp.h>
 #endif
-#include <arpa/inet.h>
 #endif
 
 
@@ -960,7 +959,7 @@ pqGetErrorNotice3(PGconn *conn, bool isError)
 			/* We can cheat a little here and not copy the message. */
 			res->errMsg = workBuf.data;
 			if (res->noticeHooks.noticeRec != NULL)
-				(*res->noticeHooks.noticeRec) (res->noticeHooks.noticeRecArg, res);
+				res->noticeHooks.noticeRec(res->noticeHooks.noticeRecArg, res);
 			PQclear(res);
 		}
 	}
@@ -2148,7 +2147,7 @@ build_startup_packet(const PGconn *conn, char *packet,
 	/* Protocol version comes first. */
 	if (packet)
 	{
-		ProtocolVersion pv = htonl(conn->pversion);
+		ProtocolVersion pv = pg_hton32(conn->pversion);
 
 		memcpy(packet + packet_len, &pv, sizeof(ProtocolVersion));
 	}

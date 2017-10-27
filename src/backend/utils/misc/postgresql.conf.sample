@@ -85,7 +85,7 @@
 #ssl_key_file = 'server.key'
 #ssl_ca_file = ''
 #ssl_crl_file = ''
-#password_encryption = md5		# md5, scram-sha-256, or plain
+#password_encryption = md5		# md5 or scram-sha-256
 #db_user_namespace = off
 #row_security = on
 
@@ -121,7 +121,6 @@
 # you actively intend to use prepared transactions.
 #work_mem = 4MB				# min 64kB
 #maintenance_work_mem = 64MB		# min 1MB
-#replacement_sort_tuples = 150000	# limits use of replacement selection sort
 #autovacuum_work_mem = -1		# min 1MB, or -1 to use maintenance_work_mem
 #max_stack_depth = 2MB			# min 100kB
 #dynamic_shared_memory_type = posix	# the default is the first option
@@ -234,7 +233,7 @@
 
 #max_wal_senders = 10		# max number of walsender processes
 				# (change requires restart)
-#wal_keep_segments = 0		# in logfile segments, 16MB each; 0 disables
+#wal_keep_segments = 0		# in logfile segments; 0 disables
 #wal_sender_timeout = 60s	# in milliseconds; 0 disables
 
 #max_replication_slots = 10	# max number of replication slots
@@ -300,6 +299,7 @@
 #enable_seqscan = on
 #enable_sort = on
 #enable_tidscan = on
+#enable_partition_wise_join = off
 
 # - Planner Cost Constants -
 

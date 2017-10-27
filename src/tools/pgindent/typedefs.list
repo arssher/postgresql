@@ -302,6 +302,8 @@ CatCache
 CatCacheHeader
 CatalogId
 CatalogIndexState
+CCHashFN
+CCFastEqualFN
 ChangeVarNodes_context
 CheckPoint
 CheckPointStmt
@@ -2016,6 +2018,10 @@ SharedInvalRelmapMsg
 SharedInvalSmgrMsg
 SharedInvalSnapshotMsg
 SharedInvalidationMessage
+SharedRecordTableKey
+SharedRecordTableEntry
+SharedRecordTypmodRegistry
+SharedTypmodTableEntry
 ShellTypeInfo
 ShippableCacheEntry
 ShippableCacheKey

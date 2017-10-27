@@ -124,10 +124,6 @@ static void ExplainCustomChildren(CustomScanState *css,
 					  List *ancestors, ExplainState *es);
 static void ExplainProperty(const char *qlabel, const char *value,
 				bool numeric, ExplainState *es);
-static void ExplainOpenGroup(const char *objtype, const char *labelname,
-				 bool labeled, ExplainState *es);
-static void ExplainCloseGroup(const char *objtype, const char *labelname,
-				  bool labeled, ExplainState *es);
 static void ExplainDummyGroup(const char *objtype, const char *labelname,
 				  ExplainState *es);
 static void ExplainXMLTag(const char *tagname, int flags, ExplainState *es);
@@ -400,8 +396,6 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 		 * We have to rewrite the contained SELECT and then pass it back to
 		 * ExplainOneQuery.  It's probably not really necessary to copy the
 		 * contained parsetree another time, but let's be safe.
-		 *
-		 * Like ExecCreateTableAs, disallow parallelism in the plan.
 		 */
 		CreateTableAsStmt *ctas = (CreateTableAsStmt *) utilityStmt;
 		List	   *rewritten;
@@ -409,7 +403,7 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 		rewritten = QueryRewrite(castNode(Query, copyObject(ctas->query)));
 		Assert(list_length(rewritten) == 1);
 		ExplainOneQuery(linitial_node(Query, rewritten),
-						0, ctas->into, es,
+						CURSOR_OPT_PARALLEL_OK, ctas->into, es,
 						queryString, params, queryEnv);
 	}
 	else if (IsA(utilityStmt, DeclareCursorStmt))
@@ -2292,15 +2286,21 @@ show_tablesample(TableSampleClause *tsc, PlanState *planstate,
 static void
 show_sort_info(SortState *sortstate, ExplainState *es)
 {
-	if (es->analyze && sortstate->sort_Done &&
-		sortstate->tuplesortstate != NULL)
+	if (!es->analyze)
+		return;
+
+	if (sortstate->sort_Done && sortstate->tuplesortstate != NULL)
 	{
 		Tuplesortstate *state = (Tuplesortstate *) sortstate->tuplesortstate;
+		TuplesortInstrumentation stats;
 		const char *sortMethod;
 		const char *spaceType;
 		long		spaceUsed;
 
-		tuplesort_get_stats(state, &sortMethod, &spaceType, &spaceUsed);
+		tuplesort_get_stats(state, &stats);
+		sortMethod = tuplesort_method_name(stats.sortMethod);
+		spaceType = tuplesort_space_type_name(stats.spaceType);
+		spaceUsed = stats.spaceUsed;
 
 		if (es->format == EXPLAIN_FORMAT_TEXT)
 		{
@@ -2314,6 +2314,51 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 			ExplainPropertyLong("Sort Space Used", spaceUsed, es);
 			ExplainPropertyText("Sort Space Type", spaceType, es);
 		}
+	}
+
+	if (sortstate->shared_info != NULL)
+	{
+		int			n;
+		bool		opened_group = false;
+
+		for (n = 0; n < sortstate->shared_info->num_workers; n++)
+		{
+			TuplesortInstrumentation *sinstrument;
+			const char *sortMethod;
+			const char *spaceType;
+			long		spaceUsed;
+
+			sinstrument = &sortstate->shared_info->sinstrument[n];
+			if (sinstrument->sortMethod == SORT_TYPE_STILL_IN_PROGRESS)
+				continue;		/* ignore any unfilled slots */
+			sortMethod = tuplesort_method_name(sinstrument->sortMethod);
+			spaceType = tuplesort_space_type_name(sinstrument->spaceType);
+			spaceUsed = sinstrument->spaceUsed;
+
+			if (es->format == EXPLAIN_FORMAT_TEXT)
+			{
+				appendStringInfoSpaces(es->str, es->indent * 2);
+				appendStringInfo(es->str,
+								 "Worker %d:  Sort Method: %s  %s: %ldkB\n",
+								 n, sortMethod, spaceType, spaceUsed);
+			}
+			else
+			{
+				if (!opened_group)
+				{
+					ExplainOpenGroup("Workers", "Workers", false, es);
+					opened_group = true;
+				}
+				ExplainOpenGroup("Worker", NULL, true, es);
+				ExplainPropertyInteger("Worker Number", n, es);
+				ExplainPropertyText("Sort Method", sortMethod, es);
+				ExplainPropertyLong("Sort Space Used", spaceUsed, es);
+				ExplainPropertyText("Sort Space Type", spaceType, es);
+				ExplainCloseGroup("Worker", NULL, true, es);
+			}
+		}
+		if (opened_group)
+			ExplainCloseGroup("Workers", "Workers", false, es);
 	}
 }
 
@@ -3226,7 +3271,7 @@ ExplainPropertyBool(const char *qlabel, bool value, ExplainState *es)
  * If labeled is true, the group members will be labeled properties,
  * while if it's false, they'll be unlabeled objects.
  */
-static void
+void
 ExplainOpenGroup(const char *objtype, const char *labelname,
 				 bool labeled, ExplainState *es)
 {
@@ -3289,7 +3334,7 @@ ExplainOpenGroup(const char *objtype, const char *labelname,
  * Close a group of related objects.
  * Parameters must match the corresponding ExplainOpenGroup call.
  */
-static void
+void
 ExplainCloseGroup(const char *objtype, const char *labelname,
 				  bool labeled, ExplainState *es)
 {

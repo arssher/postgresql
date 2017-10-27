@@ -1750,7 +1750,7 @@ pg_get_partition_constraintdef(PG_FUNCTION_ARGS)
 
 	constr_expr = get_partition_qual_relid(relationId);
 
-	/* Quick exit if not a partition */
+	/* Quick exit if no partition constraint */
 	if (constr_expr == NULL)
 		PG_RETURN_NULL();
 
@@ -2322,7 +2322,7 @@ pg_get_userbyid(PG_FUNCTION_ARGS)
 
 /*
  * pg_get_serial_sequence
- *		Get the name of the sequence used by a serial column,
+ *		Get the name of the sequence used by an identity or serial column,
  *		formatted suitably for passing to setval, nextval or currval.
  *		First parameter is not treated as double-quoted, second parameter
  *		is --- see documentation for reason.
@@ -2380,13 +2380,14 @@ pg_get_serial_sequence(PG_FUNCTION_ARGS)
 		Form_pg_depend deprec = (Form_pg_depend) GETSTRUCT(tup);
 
 		/*
-		 * We assume any auto dependency of a sequence on a column must be
-		 * what we are looking for.  (We need the relkind test because indexes
-		 * can also have auto dependencies on columns.)
+		 * Look for an auto dependency (serial column) or internal dependency
+		 * (identity column) of a sequence on a column.  (We need the relkind
+		 * test because indexes can also have auto dependencies on columns.)
 		 */
 		if (deprec->classid == RelationRelationId &&
 			deprec->objsubid == 0 &&
-			deprec->deptype == DEPENDENCY_AUTO &&
+			(deprec->deptype == DEPENDENCY_AUTO ||
+			 deprec->deptype == DEPENDENCY_INTERNAL) &&
 			get_rel_relkind(deprec->objid) == RELKIND_SEQUENCE)
 		{
 			sequenceId = deprec->objid;
@@ -6730,17 +6731,12 @@ get_name_for_var_field(Var *var, int fieldno,
 
 	/*
 	 * If it's a Var of type RECORD, we have to find what the Var refers to;
-	 * if not, we can use get_expr_result_type. If that fails, we try
-	 * lookup_rowtype_tupdesc, which will probably fail too, but will ereport
-	 * an acceptable message.
+	 * if not, we can use get_expr_result_tupdesc().
 	 */
 	if (!IsA(var, Var) ||
 		var->vartype != RECORDOID)
 	{
-		if (get_expr_result_type((Node *) var, NULL, &tupleDesc) != TYPEFUNC_COMPOSITE)
-			tupleDesc = lookup_rowtype_tupdesc_copy(exprType((Node *) var),
-													exprTypmod((Node *) var));
-		Assert(tupleDesc);
+		tupleDesc = get_expr_result_tupdesc((Node *) var, false);
 		/* Got the tupdesc, so we can extract the field name */
 		Assert(fieldno >= 1 && fieldno <= tupleDesc->natts);
 		return NameStr(TupleDescAttr(tupleDesc, fieldno - 1)->attname);
@@ -6846,8 +6842,8 @@ get_name_for_var_field(Var *var, int fieldno,
 		case RTE_NAMEDTUPLESTORE:
 
 			/*
-			 * This case should not occur: a column of a table or values list
-			 * shouldn't have type RECORD.  Fall through and fail (most
+			 * This case should not occur: a column of a table, values list,
+			 * or ENR shouldn't have type RECORD.  Fall through and fail (most
 			 * likely) at the bottom.
 			 */
 			break;
@@ -7043,14 +7039,9 @@ get_name_for_var_field(Var *var, int fieldno,
 
 	/*
 	 * We now have an expression we can't expand any more, so see if
-	 * get_expr_result_type() can do anything with it.  If not, pass to
-	 * lookup_rowtype_tupdesc() which will probably fail, but will give an
-	 * appropriate error message while failing.
+	 * get_expr_result_tupdesc() can do anything with it.
 	 */
-	if (get_expr_result_type(expr, NULL, &tupleDesc) != TYPEFUNC_COMPOSITE)
-		tupleDesc = lookup_rowtype_tupdesc_copy(exprType(expr),
-												exprTypmod(expr));
-	Assert(tupleDesc);
+	tupleDesc = get_expr_result_tupdesc(expr, false);
 	/* Got the tupdesc, so we can extract the field name */
 	Assert(fieldno >= 1 && fieldno <= tupleDesc->natts);
 	return NameStr(TupleDescAttr(tupleDesc, fieldno - 1)->attname);
@@ -8698,6 +8689,12 @@ get_rule_expr(Node *node, deparse_context *context,
 				PartitionBoundSpec *spec = (PartitionBoundSpec *) node;
 				ListCell   *cell;
 				char	   *sep;
+
+				if (spec->is_default)
+				{
+					appendStringInfoString(buf, "DEFAULT");
+					break;
+				}
 
 				switch (spec->strategy)
 				{

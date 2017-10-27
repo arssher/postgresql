@@ -54,6 +54,11 @@ static void outChar(StringInfo str, char c);
 #define WRITE_UINT_FIELD(fldname) \
 	appendStringInfo(str, " :" CppAsString(fldname) " %u", node->fldname)
 
+/* Write an unsigned integer field (anything written with UINT64_FORMAT) */
+#define WRITE_UINT64_FIELD(fldname) \
+	appendStringInfo(str, " :" CppAsString(fldname) " " UINT64_FORMAT, \
+					 node->fldname)
+
 /* Write an OID field (don't hard-wire assumption that OID is same as uint) */
 #define WRITE_OID_FIELD(fldname) \
 	appendStringInfo(str, " :" CppAsString(fldname) " %u", node->fldname)
@@ -260,7 +265,7 @@ _outPlannedStmt(StringInfo str, const PlannedStmt *node)
 	WRITE_NODE_TYPE("PLANNEDSTMT");
 
 	WRITE_ENUM_FIELD(commandType, CmdType);
-	WRITE_UINT_FIELD(queryId);
+	WRITE_UINT64_FIELD(queryId);
 	WRITE_BOOL_FIELD(hasReturning);
 	WRITE_BOOL_FIELD(hasModifyingCTE);
 	WRITE_BOOL_FIELD(canSetTag);
@@ -479,6 +484,7 @@ _outGather(StringInfo str, const Gather *node)
 	_outPlanInfo(str, (const Plan *) node);
 
 	WRITE_INT_FIELD(num_workers);
+	WRITE_INT_FIELD(rescan_param);
 	WRITE_BOOL_FIELD(single_copy);
 	WRITE_BOOL_FIELD(invisible);
 }
@@ -493,6 +499,7 @@ _outGatherMerge(StringInfo str, const GatherMerge *node)
 	_outPlanInfo(str, (const Plan *) node);
 
 	WRITE_INT_FIELD(num_workers);
+	WRITE_INT_FIELD(rescan_param);
 	WRITE_INT_FIELD(numCols);
 
 	appendStringInfoString(str, " :sortColIdx");
@@ -1392,11 +1399,10 @@ _outArrayCoerceExpr(StringInfo str, const ArrayCoerceExpr *node)
 	WRITE_NODE_TYPE("ARRAYCOERCEEXPR");
 
 	WRITE_NODE_FIELD(arg);
-	WRITE_OID_FIELD(elemfuncid);
+	WRITE_NODE_FIELD(elemexpr);
 	WRITE_OID_FIELD(resulttype);
 	WRITE_INT_FIELD(resulttypmod);
 	WRITE_OID_FIELD(resultcollid);
-	WRITE_BOOL_FIELD(isExplicit);
 	WRITE_ENUM_FIELD(coerceformat, CoercionForm);
 	WRITE_LOCATION_FIELD(location);
 }
@@ -3571,6 +3577,7 @@ _outPartitionBoundSpec(StringInfo str, const PartitionBoundSpec *node)
 	WRITE_NODE_TYPE("PARTITIONBOUNDSPEC");
 
 	WRITE_CHAR_FIELD(strategy);
+	WRITE_BOOL_FIELD(is_default);
 	WRITE_NODE_FIELD(listdatums);
 	WRITE_NODE_FIELD(lowerdatums);
 	WRITE_NODE_FIELD(upperdatums);

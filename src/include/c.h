@@ -27,10 +27,10 @@
  *	  -------	------------------------------------------------
  *		0)		pg_config.h and standard system headers
  *		1)		hacks to cope with non-ANSI C compilers
- *		2)		bool, true, false, TRUE, FALSE, NULL
+ *		2)		bool, true, false, TRUE, FALSE
  *		3)		standard system types
  *		4)		IsValid macros for system types
- *		5)		offsetof, lengthof, endof, alignment
+ *		5)		offsetof, lengthof, alignment
  *		6)		assertions
  *		7)		widely useful macros
  *		8)		random stuff
@@ -184,7 +184,7 @@
 #endif
 
 /* ----------------------------------------------------------------
- *				Section 2:	bool, true, false, TRUE, FALSE, NULL
+ *				Section 2:	bool, true, false, TRUE, FALSE
  * ----------------------------------------------------------------
  */
 
@@ -211,22 +211,12 @@ typedef char bool;
 #endif
 #endif							/* not C++ */
 
-typedef bool *BoolPtr;
-
 #ifndef TRUE
 #define TRUE	1
 #endif
 
 #ifndef FALSE
 #define FALSE	0
-#endif
-
-/*
- * NULL
- *		Null pointer.
- */
-#ifndef NULL
-#define NULL	((void *) 0)
 #endif
 
 
@@ -288,6 +278,8 @@ typedef long int int64;
 #ifndef HAVE_UINT64
 typedef unsigned long int uint64;
 #endif
+#define INT64CONST(x)  (x##L)
+#define UINT64CONST(x) (x##UL)
 #elif defined(HAVE_LONG_LONG_INT_64)
 /* We have working support for "long long int", use that */
 
@@ -297,18 +289,11 @@ typedef long long int int64;
 #ifndef HAVE_UINT64
 typedef unsigned long long int uint64;
 #endif
+#define INT64CONST(x)  (x##LL)
+#define UINT64CONST(x) (x##ULL)
 #else
 /* neither HAVE_LONG_INT_64 nor HAVE_LONG_LONG_INT_64 */
 #error must have a working 64-bit integer datatype
-#endif
-
-/* Decide if we need to decorate 64-bit constants */
-#ifdef HAVE_LL_CONSTANTS
-#define INT64CONST(x)  ((int64) x##LL)
-#define UINT64CONST(x) ((uint64) x##ULL)
-#else
-#define INT64CONST(x)  ((int64) x)
-#define UINT64CONST(x) ((uint64) x)
 #endif
 
 /* snprintf format strings to use for 64-bit integers */
@@ -338,10 +323,19 @@ typedef unsigned PG_INT128_TYPE uint128;
 #define PG_UINT16_MAX	(0xFFFF)
 #define PG_INT32_MIN	(-0x7FFFFFFF-1)
 #define PG_INT32_MAX	(0x7FFFFFFF)
-#define PG_UINT32_MAX	(0xFFFFFFFF)
+#define PG_UINT32_MAX	(0xFFFFFFFFU)
 #define PG_INT64_MIN	(-INT64CONST(0x7FFFFFFFFFFFFFFF) - 1)
 #define PG_INT64_MAX	INT64CONST(0x7FFFFFFFFFFFFFFF)
 #define PG_UINT64_MAX	UINT64CONST(0xFFFFFFFFFFFFFFFF)
+
+/* Max value of size_t might also be missing if we don't have stdint.h */
+#ifndef SIZE_MAX
+#if SIZEOF_SIZE_T == 8
+#define SIZE_MAX PG_UINT64_MAX
+#else
+#define SIZE_MAX PG_UINT32_MAX
+#endif
+#endif
 
 /*
  * We now always use int64 timestamps, but keep this symbol defined for the
@@ -541,7 +535,7 @@ typedef NameData *Name;
 
 
 /* ----------------------------------------------------------------
- *				Section 5:	offsetof, lengthof, endof, alignment
+ *				Section 5:	offsetof, lengthof, alignment
  * ----------------------------------------------------------------
  */
 /*
@@ -560,12 +554,6 @@ typedef NameData *Name;
  *		Number of elements in an array.
  */
 #define lengthof(array) (sizeof (array) / sizeof ((array)[0]))
-
-/*
- * endof
- *		Address of the element one past the last in an array.
- */
-#define endof(array)	(&(array)[lengthof(array)])
 
 /* ----------------
  * Alignment macros: align a length or address appropriately for a given type.
@@ -652,6 +640,23 @@ typedef NameData *Name;
  * if they are to be used.
  */
 #define pg_attribute_noreturn()
+#endif
+
+
+/*
+ * Forcing a function not to be inlined can be useful if it's the slow path of
+ * a performance-critical function, or should be visible in profiles to allow
+ * for proper cost attribution.  Note that unlike the pg_attribute_XXX macros
+ * above, this should be placed before the function's return type and name.
+ */
+/* GCC, Sunpro and XLC support noinline via __attribute__ */
+#if (defined(__GNUC__) && __GNUC__ > 2) || defined(__SUNPRO_C) || defined(__IBMC__)
+#define pg_noinline __attribute__((noinline))
+/* msvc via declspec */
+#elif defined(_MSC_VER)
+#define pg_noinline __declspec(noinline)
+#else
+#define pg_noinline
 #endif
 
 /* ----------------------------------------------------------------
@@ -1105,14 +1110,6 @@ extern int	fdatasync(int fildes);
 #if defined(HAVE_LONG_LONG_INT_64) && !defined(HAVE_STRTOULL) && defined(HAVE_STRTOUQ)
 #define strtoull strtouq
 #define HAVE_STRTOULL 1
-#endif
-
-/*
- * We assume if we have these two functions, we have their friends too, and
- * can use the wide-character functions.
- */
-#if defined(HAVE_WCSTOMBS) && defined(HAVE_TOWLOWER)
-#define USE_WIDE_UPPER_LOWER
 #endif
 
 /* EXEC_BACKEND defines */

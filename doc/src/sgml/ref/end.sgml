@@ -3,7 +3,7 @@ doc/src/sgml/ref/end.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="SQL-END">
+<refentry id="sql-end">
  <indexterm zone="sql-end">
   <primary>END</primary>
  </indexterm>
@@ -57,12 +57,12 @@ END [ WORK | TRANSACTION ]
   <title>Notes</title>
 
   <para>
-   Use <xref linkend="SQL-ROLLBACK"> to
+   Use <xref linkend="sql-rollback"> to
    abort a transaction.
   </para>
 
   <para>
-   Issuing <command>END</> when not inside a transaction does
+   Issuing <command>END</command> when not inside a transaction does
    no harm, but it will provoke a warning message.
   </para>
  </refsect1>

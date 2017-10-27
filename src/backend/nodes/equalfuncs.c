@@ -513,11 +513,10 @@ static bool
 _equalArrayCoerceExpr(const ArrayCoerceExpr *a, const ArrayCoerceExpr *b)
 {
 	COMPARE_NODE_FIELD(arg);
-	COMPARE_SCALAR_FIELD(elemfuncid);
+	COMPARE_NODE_FIELD(elemexpr);
 	COMPARE_SCALAR_FIELD(resulttype);
 	COMPARE_SCALAR_FIELD(resulttypmod);
 	COMPARE_SCALAR_FIELD(resultcollid);
-	COMPARE_SCALAR_FIELD(isExplicit);
 	COMPARE_COERCIONFORM_FIELD(coerceformat);
 	COMPARE_LOCATION_FIELD(location);
 
@@ -1098,6 +1097,7 @@ _equalAlterTableCmd(const AlterTableCmd *a, const AlterTableCmd *b)
 {
 	COMPARE_SCALAR_FIELD(subtype);
 	COMPARE_STRING_FIELD(name);
+	COMPARE_SCALAR_FIELD(num);
 	COMPARE_NODE_FIELD(newowner);
 	COMPARE_NODE_FIELD(def);
 	COMPARE_SCALAR_FIELD(behavior);
@@ -1663,7 +1663,16 @@ static bool
 _equalVacuumStmt(const VacuumStmt *a, const VacuumStmt *b)
 {
 	COMPARE_SCALAR_FIELD(options);
+	COMPARE_NODE_FIELD(rels);
+
+	return true;
+}
+
+static bool
+_equalVacuumRelation(const VacuumRelation *a, const VacuumRelation *b)
+{
 	COMPARE_NODE_FIELD(relation);
+	COMPARE_SCALAR_FIELD(oid);
 	COMPARE_NODE_FIELD(va_cols);
 
 	return true;
@@ -2838,6 +2847,7 @@ static bool
 _equalPartitionBoundSpec(const PartitionBoundSpec *a, const PartitionBoundSpec *b)
 {
 	COMPARE_SCALAR_FIELD(strategy);
+	COMPARE_SCALAR_FIELD(is_default);
 	COMPARE_NODE_FIELD(listdatums);
 	COMPARE_NODE_FIELD(lowerdatums);
 	COMPARE_NODE_FIELD(upperdatums);
@@ -3359,6 +3369,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_VacuumStmt:
 			retval = _equalVacuumStmt(a, b);
+			break;
+		case T_VacuumRelation:
+			retval = _equalVacuumRelation(a, b);
 			break;
 		case T_ExplainStmt:
 			retval = _equalExplainStmt(a, b);

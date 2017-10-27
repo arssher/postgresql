@@ -19,17 +19,16 @@
 
 #include "libpq-fe.h"
 #include "libpq-int.h"
+#include "port/pg_bswap.h"
 
 
 #ifdef WIN32
 #include "win32.h"
 #else
 #include <unistd.h>
-#include <netinet/in.h>
 #ifdef HAVE_NETINET_TCP_H
 #include <netinet/tcp.h>
 #endif
-#include <arpa/inet.h>
 #endif
 
 
@@ -1055,7 +1054,7 @@ pqGetErrorNotice2(PGconn *conn, bool isError)
 		if (res)
 		{
 			if (res->noticeHooks.noticeRec != NULL)
-				(*res->noticeHooks.noticeRec) (res->noticeHooks.noticeRecArg, res);
+				res->noticeHooks.noticeRec(res->noticeHooks.noticeRecArg, res);
 			PQclear(res);
 		}
 	}
@@ -1609,7 +1608,7 @@ pqBuildStartupPacket2(PGconn *conn, int *packetlen,
 
 	MemSet(startpacket, 0, sizeof(StartupPacket));
 
-	startpacket->protoVersion = htonl(conn->pversion);
+	startpacket->protoVersion = pg_hton32(conn->pversion);
 
 	/* strncpy is safe here: postmaster will handle full fields correctly */
 	strncpy(startpacket->user, conn->pguser, SM_USER);

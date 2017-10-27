@@ -355,6 +355,7 @@ lazy_vacuum_rel(Relation onerel, int options, VacuumParams *params,
 									   params->log_min_duration))
 		{
 			StringInfoData buf;
+			char *msgfmt;
 
 			TimestampDifference(starttime, endtime, &secs, &usecs);
 
@@ -373,7 +374,11 @@ lazy_vacuum_rel(Relation onerel, int options, VacuumParams *params,
 			 * emitting individual parts of the message when not applicable.
 			 */
 			initStringInfo(&buf);
-			appendStringInfo(&buf, _("automatic vacuum of table \"%s.%s.%s\": index scans: %d\n"),
+			if (aggressive)
+				msgfmt = _("automatic aggressive vacuum of table \"%s.%s.%s\": index scans: %d\n");
+			else
+				msgfmt = _("automatic vacuum of table \"%s.%s.%s\": index scans: %d\n");
+			appendStringInfo(&buf, msgfmt,
 							 get_database_name(MyDatabaseId),
 							 get_namespace_name(RelationGetNamespace(onerel)),
 							 RelationGetRelationName(onerel),
@@ -486,10 +491,16 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 	pg_rusage_init(&ru0);
 
 	relname = RelationGetRelationName(onerel);
-	ereport(elevel,
-			(errmsg("vacuuming \"%s.%s\"",
-					get_namespace_name(RelationGetNamespace(onerel)),
-					relname)));
+	if (aggressive)
+		ereport(elevel,
+				(errmsg("aggressively vacuuming \"%s.%s\"",
+						get_namespace_name(RelationGetNamespace(onerel)),
+						relname)));
+	else
+		ereport(elevel,
+				(errmsg("vacuuming \"%s.%s\"",
+						get_namespace_name(RelationGetNamespace(onerel)),
+						relname)));
 
 	empty_pages = vacuumed_pages = 0;
 	num_tuples = tups_vacuumed = nkeep = nunused = 0;
@@ -2018,17 +2029,17 @@ lazy_record_dead_tuple(LVRelStats *vacrelstats,
 					   ItemPointer itemptr)
 {
 	/*
-	 * The array shouldn't overflow under normal behavior, but perhaps it
-	 * could if we are given a really small maintenance_work_mem. In that
-	 * case, just forget the last few tuples (we'll get 'em next time).
+	 * The array must never overflow, since we rely on all deletable tuples
+	 * being removed; inability to remove a tuple might cause an old XID to
+	 * persist beyond the freeze limit, which could be disastrous later on.
 	 */
-	if (vacrelstats->num_dead_tuples < vacrelstats->max_dead_tuples)
-	{
-		vacrelstats->dead_tuples[vacrelstats->num_dead_tuples] = *itemptr;
-		vacrelstats->num_dead_tuples++;
-		pgstat_progress_update_param(PROGRESS_VACUUM_NUM_DEAD_TUPLES,
-									 vacrelstats->num_dead_tuples);
-	}
+	if (vacrelstats->num_dead_tuples >= vacrelstats->max_dead_tuples)
+		elog(ERROR, "dead tuple array overflow");
+
+	vacrelstats->dead_tuples[vacrelstats->num_dead_tuples] = *itemptr;
+	vacrelstats->num_dead_tuples++;
+	pgstat_progress_update_param(PROGRESS_VACUUM_NUM_DEAD_TUPLES,
+								 vacrelstats->num_dead_tuples);
 }
 
 /*

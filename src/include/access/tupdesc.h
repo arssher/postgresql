@@ -60,6 +60,12 @@ typedef struct tupleConstr
  * row type, or a value >= 0 to allow the rowtype to be looked up in the
  * typcache.c type cache.
  *
+ * Note that tdtypeid is never the OID of a domain over composite, even if
+ * we are dealing with values that are known (at some higher level) to be of
+ * a domain-over-composite type.  This is because tdtypeid/tdtypmod need to
+ * match up with the type labeling of composite Datums, and those are never
+ * explicitly marked as being of a domain type, either.
+ *
  * Tuple descriptors that live in caches (relcache or typcache, at present)
  * are reference-counted: they can be deleted when their reference count goes
  * to zero.  Tuple descriptors created by the executor need no reference
@@ -91,6 +97,12 @@ extern TupleDesc CreateTupleDesc(int natts, bool hasoid,
 extern TupleDesc CreateTupleDescCopy(TupleDesc tupdesc);
 
 extern TupleDesc CreateTupleDescCopyConstr(TupleDesc tupdesc);
+
+#define TupleDescSize(src) \
+	(offsetof(struct tupleDesc, attrs) + \
+	 (src)->natts * sizeof(FormData_pg_attribute))
+
+extern void TupleDescCopy(TupleDesc dst, TupleDesc src);
 
 extern void TupleDescCopyEntry(TupleDesc dst, AttrNumber dstAttno,
 				   TupleDesc src, AttrNumber srcAttno);

@@ -130,6 +130,7 @@ extern HeapTuple heap_getnext(HeapScanDesc scan, ScanDirection direction);
 extern Size heap_parallelscan_estimate(Snapshot snapshot);
 extern void heap_parallelscan_initialize(ParallelHeapScanDesc target,
 							 Relation relation, Snapshot snapshot);
+extern void heap_parallelscan_reinitialize(ParallelHeapScanDesc parallel_scan);
 extern HeapScanDesc heap_beginscan_parallel(Relation, ParallelHeapScanDesc);
 
 extern bool heap_fetch(Relation relation, Snapshot snapshot,
@@ -144,6 +145,9 @@ extern bool heap_hot_search(ItemPointer tid, Relation relation,
 extern void heap_get_latest_tid(Relation relation, Snapshot snapshot,
 					ItemPointer tid);
 extern void setLastTid(const ItemPointer tid);
+
+extern bool HeapTupleUpdateXmaxMatchesXmin(TransactionId xmax,
+							   HeapTupleHeader htup);
 
 extern BulkInsertState GetBulkInsertState(void);
 extern void FreeBulkInsertState(BulkInsertState);

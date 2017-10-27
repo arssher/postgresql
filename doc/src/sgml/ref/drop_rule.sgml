@@ -3,7 +3,7 @@ doc/src/sgml/ref/drop_rule.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="SQL-DROPRULE">
+<refentry id="sql-droprule">
  <indexterm zone="sql-droprule">
   <primary>DROP RULE</primary>
  </indexterm>
@@ -21,7 +21,7 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-DROP RULE [ IF EXISTS ] <replaceable class="PARAMETER">name</replaceable> ON <replaceable class="PARAMETER">table_name</replaceable> [ CASCADE | RESTRICT ]
+DROP RULE [ IF EXISTS ] <replaceable class="parameter">name</replaceable> ON <replaceable class="parameter">table_name</replaceable> [ CASCADE | RESTRICT ]
 </synopsis>
  </refsynopsisdiv>
 

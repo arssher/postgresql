@@ -514,7 +514,6 @@ static int	block_size;
 static int	segment_size;
 static int	wal_block_size;
 static bool data_checksums;
-static int	wal_segment_size;
 static bool integer_datetimes;
 static bool assert_enabled;
 
@@ -714,14 +713,16 @@ typedef struct
 #if XLOG_BLCKSZ < 1024 || XLOG_BLCKSZ > (1024*1024)
 #error XLOG_BLCKSZ must be between 1KB and 1MB
 #endif
-#if XLOG_SEG_SIZE < (1024*1024) || XLOG_SEG_SIZE > (1024*1024*1024)
-#error XLOG_SEG_SIZE must be between 1MB and 1GB
-#endif
 
 static const char *memory_units_hint = gettext_noop("Valid units for this parameter are \"kB\", \"MB\", \"GB\", and \"TB\".");
 
 static const unit_conversion memory_unit_conversion_table[] =
 {
+	{"GB", GUC_UNIT_BYTE, 1024 * 1024 * 1024},
+	{"MB", GUC_UNIT_BYTE, 1024 * 1024},
+	{"kB", GUC_UNIT_BYTE, 1024},
+	{"B", GUC_UNIT_BYTE, 1},
+
 	{"TB", GUC_UNIT_KB, 1024 * 1024 * 1024},
 	{"GB", GUC_UNIT_KB, 1024 * 1024},
 	{"MB", GUC_UNIT_KB, 1024},
@@ -908,6 +909,15 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&enable_gathermerge,
 		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"enable_partition_wise_join", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables partition-wise join."),
+			NULL
+		},
+		&enable_partition_wise_join,
+		false,
 		NULL, NULL, NULL
 	},
 
@@ -1932,16 +1942,6 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
-	{
-		{"replacement_sort_tuples", PGC_USERSET, RESOURCES_MEM,
-			gettext_noop("Sets the maximum number of tuples to be sorted using replacement selection."),
-			gettext_noop("When more tuples than this are present, quicksort will be used.")
-		},
-		&replacement_sort_tuples,
-		150000, 0, INT_MAX,
-		NULL, NULL, NULL
-	},
-
 	/*
 	 * We use the hopefully-safely-small value of 100kB as the compiled-in
 	 * default for max_stack_depth.  InitializeGUCOptions will increase it if
@@ -2201,7 +2201,7 @@ static struct config_int ConfigureNamesInt[] =
 		{"max_pred_locks_per_relation", PGC_SIGHUP, LOCK_MANAGEMENT,
 			gettext_noop("Sets the maximum number of predicate-locked pages and tuples per relation."),
 			gettext_noop("If more than this total of pages and tuples in the same relation are locked "
-						 "by a connection, those locks are replaced by a relation level lock.")
+						 "by a connection, those locks are replaced by a relation-level lock.")
 		},
 		&max_predicate_locks_per_relation,
 		-2, INT_MIN, INT_MAX,
@@ -2212,7 +2212,7 @@ static struct config_int ConfigureNamesInt[] =
 		{"max_pred_locks_per_page", PGC_SIGHUP, LOCK_MANAGEMENT,
 			gettext_noop("Sets the maximum number of predicate-locked tuples per page."),
 			gettext_noop("If more than this number of tuples on the same page are locked "
-						 "by a connection, those locks are replaced by a page level lock.")
+						 "by a connection, those locks are replaced by a page-level lock.")
 		},
 		&max_predicate_locks_per_page,
 		2, 0, INT_MAX,
@@ -2259,7 +2259,8 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_MB
 		},
 		&min_wal_size_mb,
-		5 * (XLOG_SEG_SIZE / (1024 * 1024)), 2, MAX_KILOBYTES,
+		DEFAULT_MIN_WAL_SEGS * (DEFAULT_XLOG_SEG_SIZE / (1024 * 1024)),
+		2, MAX_KILOBYTES,
 		NULL, NULL, NULL
 	},
 
@@ -2270,7 +2271,8 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_MB
 		},
 		&max_wal_size_mb,
-		64 * (XLOG_SEG_SIZE / (1024 * 1024)), 2, MAX_KILOBYTES,
+		DEFAULT_MAX_WAL_SEGS * (DEFAULT_XLOG_SEG_SIZE / (1024 * 1024)),
+		2, MAX_KILOBYTES,
 		NULL, assign_max_wal_size, NULL
 	},
 
@@ -2632,14 +2634,14 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"wal_segment_size", PGC_INTERNAL, PRESET_OPTIONS,
-			gettext_noop("Shows the number of pages per write ahead log segment."),
+			gettext_noop("Shows the size of write ahead log segments."),
 			NULL,
-			GUC_UNIT_XBLOCKS | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+			GUC_UNIT_BYTE | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
 		},
 		&wal_segment_size,
-		(XLOG_SEG_SIZE / XLOG_BLCKSZ),
-		(XLOG_SEG_SIZE / XLOG_BLCKSZ),
-		(XLOG_SEG_SIZE / XLOG_BLCKSZ),
+		DEFAULT_XLOG_SEG_SIZE,
+		WalSegMinSize,
+		WalSegMaxSize,
 		NULL, NULL, NULL
 	},
 
@@ -2863,11 +2865,7 @@ static struct config_int ConfigureNamesInt[] =
 		{"track_activity_query_size", PGC_POSTMASTER, RESOURCES_MEM,
 			gettext_noop("Sets the size reserved for pg_stat_activity.query, in bytes."),
 			NULL,
-
-			/*
-			 * There is no _bytes_ unit, so the user can't supply units for
-			 * this.
-			 */
+			GUC_UNIT_BYTE
 		},
 		&pgstat_track_activity_query_size,
 		1024, 100, 102400,
@@ -3608,7 +3606,7 @@ static struct config_string ConfigureNamesString[] =
 
 	{
 		{"ssl_dh_params_file", PGC_SIGHUP, CONN_AUTH_SECURITY,
-			gettext_noop("Location of the SSL DH params file."),
+			gettext_noop("Location of the SSL DH parameters file."),
 			NULL,
 			GUC_SUPERUSER_ONLY
 		},
@@ -4602,7 +4600,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 					elog(FATAL, "failed to initialize %s to %d",
 						 conf->gen.name, (int) newval);
 				if (conf->assign_hook)
-					(*conf->assign_hook) (newval, extra);
+					conf->assign_hook(newval, extra);
 				*conf->variable = conf->reset_val = newval;
 				conf->gen.extra = conf->reset_extra = extra;
 				break;
@@ -4620,7 +4618,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 					elog(FATAL, "failed to initialize %s to %d",
 						 conf->gen.name, newval);
 				if (conf->assign_hook)
-					(*conf->assign_hook) (newval, extra);
+					conf->assign_hook(newval, extra);
 				*conf->variable = conf->reset_val = newval;
 				conf->gen.extra = conf->reset_extra = extra;
 				break;
@@ -4638,7 +4636,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 					elog(FATAL, "failed to initialize %s to %g",
 						 conf->gen.name, newval);
 				if (conf->assign_hook)
-					(*conf->assign_hook) (newval, extra);
+					conf->assign_hook(newval, extra);
 				*conf->variable = conf->reset_val = newval;
 				conf->gen.extra = conf->reset_extra = extra;
 				break;
@@ -4660,7 +4658,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 					elog(FATAL, "failed to initialize %s to \"%s\"",
 						 conf->gen.name, newval ? newval : "");
 				if (conf->assign_hook)
-					(*conf->assign_hook) (newval, extra);
+					conf->assign_hook(newval, extra);
 				*conf->variable = conf->reset_val = newval;
 				conf->gen.extra = conf->reset_extra = extra;
 				break;
@@ -4676,7 +4674,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 					elog(FATAL, "failed to initialize %s to %d",
 						 conf->gen.name, newval);
 				if (conf->assign_hook)
-					(*conf->assign_hook) (newval, extra);
+					conf->assign_hook(newval, extra);
 				*conf->variable = conf->reset_val = newval;
 				conf->gen.extra = conf->reset_extra = extra;
 				break;
@@ -4901,7 +4899,7 @@ ResetAllOptions(void)
 					struct config_bool *conf = (struct config_bool *) gconf;
 
 					if (conf->assign_hook)
-						(*conf->assign_hook) (conf->reset_val,
+						conf->assign_hook(conf->reset_val,
 											  conf->reset_extra);
 					*conf->variable = conf->reset_val;
 					set_extra_field(&conf->gen, &conf->gen.extra,
@@ -4913,7 +4911,7 @@ ResetAllOptions(void)
 					struct config_int *conf = (struct config_int *) gconf;
 
 					if (conf->assign_hook)
-						(*conf->assign_hook) (conf->reset_val,
+						conf->assign_hook(conf->reset_val,
 											  conf->reset_extra);
 					*conf->variable = conf->reset_val;
 					set_extra_field(&conf->gen, &conf->gen.extra,
@@ -4925,7 +4923,7 @@ ResetAllOptions(void)
 					struct config_real *conf = (struct config_real *) gconf;
 
 					if (conf->assign_hook)
-						(*conf->assign_hook) (conf->reset_val,
+						conf->assign_hook(conf->reset_val,
 											  conf->reset_extra);
 					*conf->variable = conf->reset_val;
 					set_extra_field(&conf->gen, &conf->gen.extra,
@@ -4937,7 +4935,7 @@ ResetAllOptions(void)
 					struct config_string *conf = (struct config_string *) gconf;
 
 					if (conf->assign_hook)
-						(*conf->assign_hook) (conf->reset_val,
+						conf->assign_hook(conf->reset_val,
 											  conf->reset_extra);
 					set_string_field(conf, conf->variable, conf->reset_val);
 					set_extra_field(&conf->gen, &conf->gen.extra,
@@ -4949,7 +4947,7 @@ ResetAllOptions(void)
 					struct config_enum *conf = (struct config_enum *) gconf;
 
 					if (conf->assign_hook)
-						(*conf->assign_hook) (conf->reset_val,
+						conf->assign_hook(conf->reset_val,
 											  conf->reset_extra);
 					*conf->variable = conf->reset_val;
 					set_extra_field(&conf->gen, &conf->gen.extra,
@@ -5240,7 +5238,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 								conf->gen.extra != newextra)
 							{
 								if (conf->assign_hook)
-									(*conf->assign_hook) (newval, newextra);
+									conf->assign_hook(newval, newextra);
 								*conf->variable = newval;
 								set_extra_field(&conf->gen, &conf->gen.extra,
 												newextra);
@@ -5258,7 +5256,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 								conf->gen.extra != newextra)
 							{
 								if (conf->assign_hook)
-									(*conf->assign_hook) (newval, newextra);
+									conf->assign_hook(newval, newextra);
 								*conf->variable = newval;
 								set_extra_field(&conf->gen, &conf->gen.extra,
 												newextra);
@@ -5276,7 +5274,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 								conf->gen.extra != newextra)
 							{
 								if (conf->assign_hook)
-									(*conf->assign_hook) (newval, newextra);
+									conf->assign_hook(newval, newextra);
 								*conf->variable = newval;
 								set_extra_field(&conf->gen, &conf->gen.extra,
 												newextra);
@@ -5294,7 +5292,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 								conf->gen.extra != newextra)
 							{
 								if (conf->assign_hook)
-									(*conf->assign_hook) (newval, newextra);
+									conf->assign_hook(newval, newextra);
 								set_string_field(conf, conf->variable, newval);
 								set_extra_field(&conf->gen, &conf->gen.extra,
 												newextra);
@@ -5321,7 +5319,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 								conf->gen.extra != newextra)
 							{
 								if (conf->assign_hook)
-									(*conf->assign_hook) (newval, newextra);
+									conf->assign_hook(newval, newextra);
 								*conf->variable = newval;
 								set_extra_field(&conf->gen, &conf->gen.extra,
 												newextra);
@@ -6211,7 +6209,7 @@ set_config_option(const char *name, const char *value,
 						push_old_value(&conf->gen, action);
 
 					if (conf->assign_hook)
-						(*conf->assign_hook) (newval, newextra);
+						conf->assign_hook(newval, newextra);
 					*conf->variable = newval;
 					set_extra_field(&conf->gen, &conf->gen.extra,
 									newextra);
@@ -6301,7 +6299,7 @@ set_config_option(const char *name, const char *value,
 						push_old_value(&conf->gen, action);
 
 					if (conf->assign_hook)
-						(*conf->assign_hook) (newval, newextra);
+						conf->assign_hook(newval, newextra);
 					*conf->variable = newval;
 					set_extra_field(&conf->gen, &conf->gen.extra,
 									newextra);
@@ -6391,7 +6389,7 @@ set_config_option(const char *name, const char *value,
 						push_old_value(&conf->gen, action);
 
 					if (conf->assign_hook)
-						(*conf->assign_hook) (newval, newextra);
+						conf->assign_hook(newval, newextra);
 					*conf->variable = newval;
 					set_extra_field(&conf->gen, &conf->gen.extra,
 									newextra);
@@ -6499,7 +6497,7 @@ set_config_option(const char *name, const char *value,
 						push_old_value(&conf->gen, action);
 
 					if (conf->assign_hook)
-						(*conf->assign_hook) (newval, newextra);
+						conf->assign_hook(newval, newextra);
 					set_string_field(conf, conf->variable, newval);
 					set_extra_field(&conf->gen, &conf->gen.extra,
 									newextra);
@@ -6594,7 +6592,7 @@ set_config_option(const char *name, const char *value,
 						push_old_value(&conf->gen, action);
 
 					if (conf->assign_hook)
-						(*conf->assign_hook) (newval, newextra);
+						conf->assign_hook(newval, newextra);
 					*conf->variable = newval;
 					set_extra_field(&conf->gen, &conf->gen.extra,
 									newextra);
@@ -7243,8 +7241,7 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 	 * truncate and reuse it.
 	 */
 	Tmpfd = BasicOpenFile(AutoConfTmpFileName,
-						  O_CREAT | O_RDWR | O_TRUNC,
-						  S_IRUSR | S_IWUSR);
+						  O_CREAT | O_RDWR | O_TRUNC);
 	if (Tmpfd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -8113,6 +8110,9 @@ GetConfigOptionByNum(int varnum, const char **values, bool *noshow)
 	{
 		switch (conf->flags & (GUC_UNIT_MEMORY | GUC_UNIT_TIME))
 		{
+			case GUC_UNIT_BYTE:
+				values[2] = "B";
+				break;
 			case GUC_UNIT_KB:
 				values[2] = "kB";
 				break;
@@ -8653,7 +8653,7 @@ _ShowOption(struct config_generic *record, bool use_units)
 				struct config_bool *conf = (struct config_bool *) record;
 
 				if (conf->show_hook)
-					val = (*conf->show_hook) ();
+					val = conf->show_hook();
 				else
 					val = *conf->variable ? "on" : "off";
 			}
@@ -8664,7 +8664,7 @@ _ShowOption(struct config_generic *record, bool use_units)
 				struct config_int *conf = (struct config_int *) record;
 
 				if (conf->show_hook)
-					val = (*conf->show_hook) ();
+					val = conf->show_hook();
 				else
 				{
 					/*
@@ -8694,7 +8694,7 @@ _ShowOption(struct config_generic *record, bool use_units)
 				struct config_real *conf = (struct config_real *) record;
 
 				if (conf->show_hook)
-					val = (*conf->show_hook) ();
+					val = conf->show_hook();
 				else
 				{
 					snprintf(buffer, sizeof(buffer), "%g",
@@ -8709,7 +8709,7 @@ _ShowOption(struct config_generic *record, bool use_units)
 				struct config_string *conf = (struct config_string *) record;
 
 				if (conf->show_hook)
-					val = (*conf->show_hook) ();
+					val = conf->show_hook();
 				else if (*conf->variable && **conf->variable)
 					val = *conf->variable;
 				else
@@ -8722,7 +8722,7 @@ _ShowOption(struct config_generic *record, bool use_units)
 				struct config_enum *conf = (struct config_enum *) record;
 
 				if (conf->show_hook)
-					val = (*conf->show_hook) ();
+					val = conf->show_hook();
 				else
 					val = config_enum_lookup_by_value(conf, *conf->variable);
 			}
@@ -9807,7 +9807,7 @@ call_bool_check_hook(struct config_bool *conf, bool *newval, void **extra,
 	GUC_check_errdetail_string = NULL;
 	GUC_check_errhint_string = NULL;
 
-	if (!(*conf->check_hook) (newval, extra, source))
+	if (!conf->check_hook(newval, extra, source))
 	{
 		ereport(elevel,
 				(errcode(GUC_check_errcode_value),
@@ -9841,7 +9841,7 @@ call_int_check_hook(struct config_int *conf, int *newval, void **extra,
 	GUC_check_errdetail_string = NULL;
 	GUC_check_errhint_string = NULL;
 
-	if (!(*conf->check_hook) (newval, extra, source))
+	if (!conf->check_hook(newval, extra, source))
 	{
 		ereport(elevel,
 				(errcode(GUC_check_errcode_value),
@@ -9875,7 +9875,7 @@ call_real_check_hook(struct config_real *conf, double *newval, void **extra,
 	GUC_check_errdetail_string = NULL;
 	GUC_check_errhint_string = NULL;
 
-	if (!(*conf->check_hook) (newval, extra, source))
+	if (!conf->check_hook(newval, extra, source))
 	{
 		ereport(elevel,
 				(errcode(GUC_check_errcode_value),
@@ -9909,7 +9909,7 @@ call_string_check_hook(struct config_string *conf, char **newval, void **extra,
 	GUC_check_errdetail_string = NULL;
 	GUC_check_errhint_string = NULL;
 
-	if (!(*conf->check_hook) (newval, extra, source))
+	if (!conf->check_hook(newval, extra, source))
 	{
 		ereport(elevel,
 				(errcode(GUC_check_errcode_value),
@@ -9943,7 +9943,7 @@ call_enum_check_hook(struct config_enum *conf, int *newval, void **extra,
 	GUC_check_errdetail_string = NULL;
 	GUC_check_errhint_string = NULL;
 
-	if (!(*conf->check_hook) (newval, extra, source))
+	if (!conf->check_hook(newval, extra, source))
 	{
 		ereport(elevel,
 				(errcode(GUC_check_errcode_value),

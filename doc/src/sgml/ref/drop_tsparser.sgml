@@ -3,7 +3,7 @@ doc/src/sgml/ref/drop_tsparser.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="SQL-DROPTSPARSER">
+<refentry id="sql-droptsparser">
  <indexterm zone="sql-droptsparser">
   <primary>DROP TEXT SEARCH PARSER</primary>
  </indexterm>
@@ -21,7 +21,7 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-DROP TEXT SEARCH PARSER [ IF EXISTS ] <replaceable class="PARAMETER">name</replaceable> [ CASCADE | RESTRICT ]
+DROP TEXT SEARCH PARSER [ IF EXISTS ] <replaceable class="parameter">name</replaceable> [ CASCADE | RESTRICT ]
 </synopsis>
  </refsynopsisdiv>
 
@@ -92,7 +92,7 @@ DROP TEXT SEARCH PARSER my_parser;
 </programlisting>
 
    This command will not succeed if there are any existing text search
-   configurations that use the parser.  Add <literal>CASCADE</> to
+   configurations that use the parser.  Add <literal>CASCADE</literal> to
    drop such configurations along with the parser.
   </para>
  </refsect1>

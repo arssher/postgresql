@@ -3,7 +3,7 @@ doc/src/sgml/ref/create_subscription.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="SQL-CREATESUBSCRIPTION">
+<refentry id="sql-createsubscription">
  <indexterm zone="sql-createsubscription">
   <primary>CREATE SUBSCRIPTION</primary>
  </indexterm>
@@ -21,9 +21,9 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-CREATE SUBSCRIPTION <replaceable class="PARAMETER">subscription_name</replaceable>
-    CONNECTION '<replaceable class="PARAMETER">conninfo</replaceable>'
-    PUBLICATION <replaceable class="PARAMETER">publication_name</replaceable> [, ...]
+CREATE SUBSCRIPTION <replaceable class="parameter">subscription_name</replaceable>
+    CONNECTION '<replaceable class="parameter">conninfo</replaceable>'
+    PUBLICATION <replaceable class="parameter">publication_name</replaceable> [, ...]
     [ WITH ( <replaceable class="parameter">subscription_parameter</replaceable> [= <replaceable class="parameter">value</replaceable>] [, ... ] ) ]
 </synopsis>
  </refsynopsisdiv>
@@ -46,11 +46,6 @@ CREATE SUBSCRIPTION <replaceable class="PARAMETER">subscription_name</replaceabl
   <para>
    A logical replication worker will be started to replicate data for the new
    subscription at the commit of the transaction where this command is run.
-  </para>
-
-  <para>
-   <command>CREATE SUBSCRIPTION</command> cannot be executed inside a
-   transaction block when the parameter <literal>create_slot</literal> is specified.
   </para>
 
   <para>
@@ -206,7 +201,7 @@ CREATE SUBSCRIPTION <replaceable class="PARAMETER">subscription_name</replaceabl
           to <literal>false</literal>, the tables are not subscribed, and so
           after you enable the subscription nothing will be replicated.
           It is required to run
-          <literal>ALTER SUBSCRIPTION ... REFRESH PUBLICATION</> in order
+          <literal>ALTER SUBSCRIPTION ... REFRESH PUBLICATION</literal> in order
           for tables to be subscribed.
          </para>
         </listitem>
@@ -225,6 +220,11 @@ CREATE SUBSCRIPTION <replaceable class="PARAMETER">subscription_name</replaceabl
    See <xref linkend="logical-replication-security"> for details on
    how to configure access control between the subscription and the
    publication instance.
+  </para>
+
+  <para>
+   When creating a replication slot (the default behavior), <command>CREATE
+   SUBSCRIPTION</command> cannot be executed inside a transaction block.
   </para>
 
   <para>
@@ -272,7 +272,7 @@ CREATE SUBSCRIPTION mysub
   <title>Compatibility</title>
 
   <para>
-   <command>CREATE SUBSCRIPTION</command> is a <productname>PostgreSQL</>
+   <command>CREATE SUBSCRIPTION</command> is a <productname>PostgreSQL</productname>
    extension.
   </para>
  </refsect1>

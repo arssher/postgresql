@@ -66,10 +66,14 @@ ALLSGML := $(wildcard $(srcdir)/*.sgml $(srcdir)/ref/*.sgml) $(GENERATED_SGML)
 # Enable some extra warnings
 # -wfully-tagged needed to throw a warning on missing tags
 # for older tool chains, 2007-08-31
-# Note: try "make SPFLAGS=-wxml" to catch a lot of other dubious constructs,
-# in particular < and & that haven't been made into entities.  It's far too
-# noisy to turn on by default, unfortunately.
-override SPFLAGS += -wall -wno-unused-param -wno-empty -wfully-tagged
+override SPFLAGS += -wall -wno-unused-param -wfully-tagged
+# Additional warnings for XML compatibility.  The conditional is meant
+# to detect whether we are using OpenSP rather than the ancient
+# original SP.
+override SPFLAGS += -wempty
+ifneq (,$(filter o%,$(notdir $(OSX))))
+override SPFLAGS += -wdata-delim -winstance-ignore-ms -winstance-include-ms -winstance-param-entity
+endif
 
 
 ##
@@ -131,9 +135,8 @@ INSTALL.html: %.html : stylesheet-text.xsl %.xml
 	$(XMLLINT) --noout --valid $*.xml
 	$(XSLTPROC) $(XSLTPROCFLAGS) $(XSLTPROC_HTML_FLAGS) $^ >$@
 
-INSTALL.xml: standalone-install.sgml installation.sgml version.sgml
-	$(OSX) $(SPFLAGS) $(SGMLINCLUDE) -x lower $(filter-out version.sgml,$^) >$@.tmp
-	$(call mangle-xml,chapter)
+INSTALL.xml: standalone-profile.xsl standalone-install.xml postgres.xml
+	$(XSLTPROC) $(XSLTPROCFLAGS) --xinclude $(wordlist 1,2,$^) >$@
 
 
 ##

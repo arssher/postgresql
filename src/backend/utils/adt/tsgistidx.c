@@ -110,7 +110,7 @@ static int	outbuf_maxlen = 0;
 Datum
 gtsvectorout(PG_FUNCTION_ARGS)
 {
-	SignTSVector *key = (SignTSVector *) DatumGetPointer(PG_DETOAST_DATUM(PG_GETARG_POINTER(0)));
+	SignTSVector *key = (SignTSVector *) PG_DETOAST_DATUM(PG_GETARG_POINTER(0));
 	char	   *outbuf;
 
 	if (outbuf_maxlen == 0)
@@ -272,8 +272,12 @@ gtsvector_compress(PG_FUNCTION_ARGS)
 Datum
 gtsvector_decompress(PG_FUNCTION_ARGS)
 {
+	/*
+	 * We need to detoast the stored value, because the other gtsvector
+	 * support functions don't cope with toasted values.
+	 */
 	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
-	SignTSVector *key = (SignTSVector *) DatumGetPointer(PG_DETOAST_DATUM(entry->key));
+	SignTSVector *key = (SignTSVector *) PG_DETOAST_DATUM(entry->key);
 
 	if (key != (SignTSVector *) DatumGetPointer(entry->key))
 	{
@@ -317,14 +321,14 @@ checkcondition_arr(void *checkval, QueryOperand *val, ExecPhraseData *data)
 	{
 		StopMiddle = StopLow + (StopHigh - StopLow) / 2;
 		if (*StopMiddle == val->valcrc)
-			return (true);
+			return true;
 		else if (*StopMiddle < val->valcrc)
 			StopLow = StopMiddle + 1;
 		else
 			StopHigh = StopMiddle;
 	}
 
-	return (false);
+	return false;
 }
 
 static bool

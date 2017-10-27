@@ -3,7 +3,7 @@ doc/src/sgml/ref/drop_language.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="SQL-DROPLANGUAGE">
+<refentry id="sql-droplanguage">
  <indexterm zone="sql-droplanguage">
   <primary>DROP LANGUAGE</primary>
  </indexterm>
@@ -21,7 +21,7 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-DROP [ PROCEDURAL ] LANGUAGE [ IF EXISTS ] <replaceable class="PARAMETER">name</replaceable> [ CASCADE | RESTRICT ]
+DROP [ PROCEDURAL ] LANGUAGE [ IF EXISTS ] <replaceable class="parameter">name</replaceable> [ CASCADE | RESTRICT ]
 </synopsis>
  </refsynopsisdiv>
 
@@ -31,13 +31,13 @@ DROP [ PROCEDURAL ] LANGUAGE [ IF EXISTS ] <replaceable class="PARAMETER">name</
   <para>
    <command>DROP LANGUAGE</command> removes the definition of a
    previously registered procedural language.  You must be a superuser
-   or the owner of the language to use <command>DROP LANGUAGE</>.
+   or the owner of the language to use <command>DROP LANGUAGE</command>.
   </para>
 
   <note>
    <para>
     As of <productname>PostgreSQL</productname> 9.1, most procedural
-    languages have been made into <quote>extensions</>, and should
+    languages have been made into <quote>extensions</quote>, and should
     therefore be removed with <xref linkend="sql-dropextension">
     not <command>DROP LANGUAGE</command>.
    </para>
@@ -60,7 +60,7 @@ DROP [ PROCEDURAL ] LANGUAGE [ IF EXISTS ] <replaceable class="PARAMETER">name</
    </varlistentry>
 
    <varlistentry>
-    <term><replaceable class="PARAMETER">name</replaceable></term>
+    <term><replaceable class="parameter">name</replaceable></term>
     <listitem>
      <para>
       The name of an existing procedural language.  For backward

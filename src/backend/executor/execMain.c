@@ -252,16 +252,16 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	estate->es_instrument = queryDesc->instrument_options;
 
 	/*
-	 * Initialize the plan state tree
-	 */
-	InitPlan(queryDesc, eflags);
-
-	/*
 	 * Set up an AFTER-trigger statement context, unless told not to, or
 	 * unless it's EXPLAIN-only mode (when ExecutorFinish won't be called).
 	 */
 	if (!(eflags & (EXEC_FLAG_SKIP_TRIGGERS | EXEC_FLAG_EXPLAIN_ONLY)))
 		AfterTriggerBeginQuery();
+
+	/*
+	 * Initialize the plan state tree
+	 */
+	InitPlan(queryDesc, eflags);
 
 	MemoryContextSwitchTo(oldcontext);
 }
@@ -349,7 +349,7 @@ standard_ExecutorRun(QueryDesc *queryDesc,
 				  queryDesc->plannedstmt->hasReturning);
 
 	if (sendTuples)
-		(*dest->rStartup) (dest, operation, queryDesc->tupDesc);
+		dest->rStartup(dest, operation, queryDesc->tupDesc);
 
 	/*
 	 * run plan
@@ -375,7 +375,7 @@ standard_ExecutorRun(QueryDesc *queryDesc,
 	 * shutdown tuple receiver, if we started it
 	 */
 	if (sendTuples)
-		(*dest->rShutdown) (dest);
+		dest->rShutdown(dest);
 
 	if (queryDesc->totaltime)
 		InstrStopNode(queryDesc->totaltime, estate->es_processed);
@@ -1097,8 +1097,9 @@ InitPlan(QueryDesc *queryDesc, int eflags)
  * CheckValidRowMarkRel.
  */
 void
-CheckValidResultRel(Relation resultRel, CmdType operation)
+CheckValidResultRel(ResultRelInfo *resultRelInfo, CmdType operation)
 {
+	Relation	resultRel = resultRelInfo->ri_RelationDesc;
 	TriggerDesc *trigDesc = resultRel->trigdesc;
 	FdwRoutine *fdwroutine;
 
@@ -1169,10 +1170,17 @@ CheckValidResultRel(Relation resultRel, CmdType operation)
 			break;
 		case RELKIND_FOREIGN_TABLE:
 			/* Okay only if the FDW supports it */
-			fdwroutine = GetFdwRoutineForRelation(resultRel, false);
+			fdwroutine = resultRelInfo->ri_FdwRoutine;
 			switch (operation)
 			{
 				case CMD_INSERT:
+
+					/*
+					 * If foreign partition to do tuple-routing for, skip the
+					 * check; it's disallowed elsewhere.
+					 */
+					if (resultRelInfo->ri_PartitionRoot)
+						break;
 					if (fdwroutine->ExecForeignInsert == NULL)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -1689,11 +1697,9 @@ ExecutePlan(EState *estate,
 
 	/*
 	 * If the plan might potentially be executed multiple times, we must force
-	 * it to run without parallelism, because we might exit early.  Also
-	 * disable parallelism when writing into a relation, because no database
-	 * changes are allowed in parallel mode.
+	 * it to run without parallelism, because we might exit early.
 	 */
-	if (!execute_once || dest->mydest == DestIntoRel)
+	if (!execute_once)
 		use_parallel_mode = false;
 
 	if (use_parallel_mode)
@@ -1745,7 +1751,7 @@ ExecutePlan(EState *estate,
 			 * has closed and no more tuples can be sent. If that's the case,
 			 * end the loop.
 			 */
-			if (!((*dest->receiveSlot) (slot, dest)))
+			if (!dest->receiveSlot(slot, dest))
 				break;
 		}
 
@@ -2588,8 +2594,7 @@ EvalPlanQualFetch(EState *estate, Relation relation, int lockmode,
 			 * atomic, and Xmin never changes in an existing tuple, except to
 			 * invalid or frozen, and neither of those can match priorXmax.)
 			 */
-			if (!TransactionIdEquals(HeapTupleHeaderGetXmin(tuple.t_data),
-									 priorXmax))
+			if (!HeapTupleUpdateXmaxMatchesXmin(priorXmax, tuple.t_data))
 			{
 				ReleaseBuffer(buffer);
 				return NULL;
@@ -2736,8 +2741,7 @@ EvalPlanQualFetch(EState *estate, Relation relation, int lockmode,
 		/*
 		 * As above, if xmin isn't what we're expecting, do nothing.
 		 */
-		if (!TransactionIdEquals(HeapTupleHeaderGetXmin(tuple.t_data),
-								 priorXmax))
+		if (!HeapTupleUpdateXmaxMatchesXmin(priorXmax, tuple.t_data))
 		{
 			ReleaseBuffer(buffer);
 			return NULL;
@@ -3238,7 +3242,7 @@ EvalPlanQualEnd(EPQState *epqstate)
  * Output arguments:
  * 'pd' receives an array of PartitionDispatch objects with one entry for
  *		every partitioned table in the partition tree
- * 'partitions' receives an array of ResultRelInfo objects with one entry for
+ * 'partitions' receives an array of ResultRelInfo* objects with one entry for
  *		every leaf partition in the partition tree
  * 'tup_conv_maps' receives an array of TupleConversionMap objects with one
  *		entry for every leaf partition (required to convert input tuple based
@@ -3261,7 +3265,7 @@ ExecSetupPartitionTupleRouting(Relation rel,
 							   Index resultRTindex,
 							   EState *estate,
 							   PartitionDispatch **pd,
-							   ResultRelInfo **partitions,
+							   ResultRelInfo ***partitions,
 							   TupleConversionMap ***tup_conv_maps,
 							   TupleTableSlot **partition_tuple_slot,
 							   int *num_parted, int *num_partitions)
@@ -3279,8 +3283,8 @@ ExecSetupPartitionTupleRouting(Relation rel,
 	(void) find_all_inheritors(RelationGetRelid(rel), RowExclusiveLock, NULL);
 	*pd = RelationGetPartitionDispatchInfo(rel, num_parted, &leaf_parts);
 	*num_partitions = list_length(leaf_parts);
-	*partitions = (ResultRelInfo *) palloc(*num_partitions *
-										   sizeof(ResultRelInfo));
+	*partitions = (ResultRelInfo **) palloc(*num_partitions *
+											sizeof(ResultRelInfo *));
 	*tup_conv_maps = (TupleConversionMap **) palloc0(*num_partitions *
 													 sizeof(TupleConversionMap *));
 
@@ -3292,7 +3296,8 @@ ExecSetupPartitionTupleRouting(Relation rel,
 	 */
 	*partition_tuple_slot = MakeTupleTableSlot();
 
-	leaf_part_rri = *partitions;
+	leaf_part_rri = (ResultRelInfo *) palloc0(*num_partitions *
+											  sizeof(ResultRelInfo));
 	i = 0;
 	foreach(cell, leaf_parts)
 	{
@@ -3308,11 +3313,6 @@ ExecSetupPartitionTupleRouting(Relation rel,
 		part_tupdesc = RelationGetDescr(partrel);
 
 		/*
-		 * Verify result relation is a valid target for the current operation.
-		 */
-		CheckValidResultRel(partrel, CMD_INSERT);
-
-		/*
 		 * Save a tuple conversion map to convert a tuple routed to this
 		 * partition from the parent's type to the partition's.
 		 */
@@ -3325,8 +3325,10 @@ ExecSetupPartitionTupleRouting(Relation rel,
 						  rel,
 						  estate->es_instrument);
 
-		estate->es_leaf_result_relations =
-			lappend(estate->es_leaf_result_relations, leaf_part_rri);
+		/*
+		 * Verify result relation is a valid target for INSERT.
+		 */
+		CheckValidResultRel(leaf_part_rri, CMD_INSERT);
 
 		/*
 		 * Open partition indices (remember we do not support ON CONFLICT in
@@ -3337,7 +3339,10 @@ ExecSetupPartitionTupleRouting(Relation rel,
 			leaf_part_rri->ri_IndexRelationDescs == NULL)
 			ExecOpenIndices(leaf_part_rri, false);
 
-		leaf_part_rri++;
+		estate->es_leaf_result_relations =
+			lappend(estate->es_leaf_result_relations, leaf_part_rri);
+
+		(*partitions)[i] = leaf_part_rri++;
 		i++;
 	}
 }
