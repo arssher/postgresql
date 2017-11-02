@@ -355,7 +355,8 @@ static void postgresGetForeignUpperPaths(PlannerInfo *root,
 							 RelOptInfo *output_rel);
 static void postgresBeginForeignCopyFrom(EState *estate,
 										 ResultRelInfo *rinfo,
-										 CopyState cstate);
+										 CopyState cstate,
+										 const char *dest_relname);
 static void postgresForeignNextCopyFrom(EState *estate,
 										ResultRelInfo *rinfo,
 										CopyState cstate);
@@ -5206,7 +5207,7 @@ _PG_init(void)
 /* Begin COPY FROM to foreign table */
 static void
 postgresBeginForeignCopyFrom(EState *estate, ResultRelInfo *rinfo,
-							 CopyState cstate)
+							 CopyState cstate, const char *dest_relname)
 {
 	Relation		rel = rinfo->ri_RelationDesc;
 	RangeTblEntry	*rte;
@@ -5216,6 +5217,7 @@ postgresBeginForeignCopyFrom(EState *estate, ResultRelInfo *rinfo,
 	StringInfoData 	sql;
 	PGconn	   *conn;
 	PGresult   *res;
+	bool *copy_from_started;
 
 	/*
 	 * Identify which user to do the remote access as.  This should match what
@@ -5227,14 +5229,17 @@ postgresBeginForeignCopyFrom(EState *estate, ResultRelInfo *rinfo,
 	/* Get info about foreign table. */
 	table = GetForeignTable(RelationGetRelid(rel));
 	user = GetUserMapping(userid, table->serverid);
+	rinfo->ri_FdwState = user;
 
-	/* Open connection */
-	conn = GetConnection(user, false);
-	rinfo->ri_FdwState = conn;
+	/* Get (open, if not yet) connection */
+	conn = GetConnectionCopyFrom(user, false, &copy_from_started);
+	/* We already did COPY FROM to this server */
+	if (*copy_from_started)
+		return;
 
 	/* deparse COPY stmt */
 	initStringInfo(&sql);
-	deparseCopyFromSql(&sql, rel, cstate);
+	deparseCopyFromSql(&sql, rel, cstate, dest_relname);
 
 	res = PQexec(conn, sql.data);
 	if (PQresultStatus(res) != PGRES_COPY_IN)
@@ -5242,6 +5247,8 @@ postgresBeginForeignCopyFrom(EState *estate, ResultRelInfo *rinfo,
 		pgfdw_report_error(ERROR, res, conn, true, sql.data);
 	}
 	PQclear(res);
+
+	*copy_from_started = true;
 }
 
 /* COPY FROM next row to foreign table */
@@ -5249,8 +5256,11 @@ static void
 postgresForeignNextCopyFrom(EState *estate, ResultRelInfo *rinfo,
 							CopyState cstate)
 {
-	PGconn	   *conn = (PGconn *) rinfo->ri_FdwState;
+	bool		*copy_from_started;
+	UserMapping *user = (UserMapping *) rinfo->ri_FdwState;
+	PGconn		*conn = GetConnectionCopyFrom(user, false, &copy_from_started);
 
+	Assert(copy_from_started);
 	Assert(!cstate->binary);
 	/* TODO: distinuish failure and nonblocking-send EAGAIN */
 	if (PQputline(conn, cstate->line_buf.data) || PQputnbytes(conn, "\n", 1))
@@ -5263,19 +5273,24 @@ postgresForeignNextCopyFrom(EState *estate, ResultRelInfo *rinfo,
 static void
 postgresEndForeignCopyFrom(EState *estate, ResultRelInfo *rinfo)
 {
-	PGconn	   *conn = (PGconn *) rinfo->ri_FdwState;
-	PGresult   *res;
+	bool		*copy_from_started;
+	UserMapping *user = (UserMapping *) rinfo->ri_FdwState;
+	PGconn		*conn = GetConnectionCopyFrom(user, false, &copy_from_started);
+	PGresult	*res;
 
-	/* TODO: PQgetResult? */
-	if (PQendcopy(conn))
+	if (*copy_from_started)
 	{
-		pgfdw_report_error(ERROR, NULL, conn, false, "end postgres_fdw copy from");
+		/* TODO: PQgetResult? */
+		if (PQendcopy(conn))
+		{
+			pgfdw_report_error(ERROR, NULL, conn, false, "end postgres_fdw copy from");
+		}
+		while ((res = PQgetResult(conn)) != NULL)
+		{
+			/* TODO: get error? */
+			PQclear(res);
+		}
+		*copy_from_started = false;
+		ReleaseConnection(conn);
 	}
-	while ((res = PQgetResult(conn)) != NULL)
-	{
-		/* TODO: get error? */
-		PQclear(res);
-	}
-
-	ReleaseConnection(conn);
 }
