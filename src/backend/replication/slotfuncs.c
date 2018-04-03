@@ -378,8 +378,7 @@ pg_logical_replication_slot_advance(XLogRecPtr startlsn, XLogRecPtr moveto)
 			startlsn = InvalidXLogRecPtr;
 
 			/*
-			 * The {begin_txn,change,commit_txn}_wrapper callbacks above will
-			 * store the description into our tuplestore.
+			 * Changes are not actually produced in fast_forward mode.
 			 */
 			if (record != NULL)
 				LogicalDecodingProcessRecord(ctx, ctx->reader);
@@ -472,7 +471,14 @@ pg_replication_slot_advance(PG_FUNCTION_ARGS)
 	/* Acquire the slot so we "own" it */
 	ReplicationSlotAcquire(NameStr(*slotname), true);
 
-	startlsn = MyReplicationSlot->data.confirmed_flush;
+	/*
+	 * For physical replication, we can't stream earlier than restart_lsn;
+	 * For logical replication, we can't decode commits before confirmed_flush.
+	 */
+	if (OidIsValid(MyReplicationSlot->data.database))
+		startlsn = MyReplicationSlot->data.confirmed_flush;
+	else
+		startlsn = MyReplicationSlot->data.restart_lsn;
 	if (moveto < startlsn)
 	{
 		ReplicationSlotRelease();

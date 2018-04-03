@@ -302,8 +302,8 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 			startptr = InvalidXLogRecPtr;
 
 			/*
-			 * The {begin_txn,change,commit_txn}_wrapper callbacks above will
-			 * store the description into our tuplestore.
+			 * The do_write ctx callback will store the decoding results into
+			 * our tuplestore.
 			 */
 			if (record != NULL)
 				LogicalDecodingProcessRecord(ctx, ctx->reader);

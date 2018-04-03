@@ -931,24 +931,20 @@ LogStandbySnapshot(void)
 
 	/*
 	 * GetRunningTransactionData() acquired ProcArrayLock, we must release it.
-	 * For Hot Standby this can be done before inserting the WAL record
-	 * because ProcArrayApplyRecoveryInfo() rechecks the commit status using
-	 * the clog. For logical decoding, though, the lock can't be released
-	 * early because the clog might be "in the future" from the POV of the
-	 * historic snapshot. This would allow for situations where we're waiting
-	 * for the end of a transaction listed in the xl_running_xacts record
-	 * which, according to the WAL, has committed before the xl_running_xacts
-	 * record. Fortunately this routine isn't executed frequently, and it's
-	 * only a shared lock.
 	 */
-	if (wal_level < WAL_LEVEL_LOGICAL)
-		LWLockRelease(ProcArrayLock);
+	LWLockRelease(ProcArrayLock);
 
+	/*
+	 * Note that since we do not hold WALInsertLock(s), some commit/abort
+	 * records might slip after we have scanned procArray but before we logged
+	 * list of running xacts, making it a bit outdated.
+	 * Hot Standby handles this in ProcArrayApplyRecoveryInfo() by rechecking
+	 * the commit status using the clog. For logical decoding, though, the
+	 * clog might be "in the future" from the POV of the historic snapshot.
+	 * Because of that snapbuild logs xl_running_xacts twice and tracks all
+	 * commits/aborts between them, see snapbuild.c.
+	 */
 	recptr = LogCurrentRunningXacts(running);
-
-	/* Release lock if we kept it longer ... */
-	if (wal_level >= WAL_LEVEL_LOGICAL)
-		LWLockRelease(ProcArrayLock);
 
 	/* GetRunningTransactionData() acquired XidGenLock, we must release it */
 	LWLockRelease(XidGenLock);

@@ -1680,8 +1680,8 @@ HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
 	else if (TransactionIdInArray(xmin, snapshot->subxip, snapshot->subxcnt))
 	{
 		bool		resolved;
-		CommandId	cmin = HeapTupleHeaderGetRawCommandId(tuple);
-		CommandId	cmax = InvalidCommandId;
+		CommandId	cmin;
+		CommandId	cmax;
 
 		/*
 		 * another transaction might have (tried to) delete this tuple or
@@ -1756,7 +1756,7 @@ HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
 	{
 		bool		resolved;
 		CommandId	cmin;
-		CommandId	cmax = HeapTupleHeaderGetRawCommandId(tuple);
+		CommandId	cmax;
 
 		/* Lookup actual cmin/cmax values */
 		resolved = ResolveCminCmaxDuringDecoding(HistoricSnapshotGetTupleCids(), snapshot,

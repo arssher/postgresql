@@ -73,8 +73,9 @@ typedef struct ReplicationSlotPersistentData
 	XLogRecPtr	restart_lsn;
 
 	/*
-	 * Oldest LSN that the client has acked receipt for.  This is used as the
-	 * start_lsn point in case the client doesn't specify one, and also as a
+	 * Only for logical slots. LSN of the oldest COMMIT record client acked receipt
+	 * of; we must be able to decode all xacts which commit later. This is used
+	 * as the start_lsn point in case the client doesn't specify one, and also as a
 	 * safety measure to jump forwards in case the client specifies a
 	 * start_lsn that's further in the past than this value.
 	 */

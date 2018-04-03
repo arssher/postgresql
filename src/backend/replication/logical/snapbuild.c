@@ -458,9 +458,10 @@ SnapBuildSnapDecRefcount(Snapshot snap)
  * Build a new snapshot, based on currently committed catalog-modifying
  * transactions.
  *
- * In-progress transactions with catalog access are *not* allowed to modify
- * these snapshots; they have to copy them and fill in appropriate ->curcid
- * and ->subxip/subxcnt values.
+ * As these snapshots are shared among transactions, they are *not* allowed to
+ * be modified. If xact modified the catalog, to see its own changes it has to
+ * copy the snapshot and fill in appropriate ->curcid and ->subxip/subxcnt
+ * values.
  */
 static Snapshot
 SnapBuildBuildSnapshot(SnapBuild *builder)
@@ -562,6 +563,7 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 	if (TransactionIdIsValid(MyPgXact->xmin))
 		elog(ERROR, "cannot build an initial slot snapshot when MyPgXact->xmin already is valid");
 
+	/* allocate in transaction context, refcount is not used */
 	snap = SnapBuildBuildSnapshot(builder);
 
 	/*
@@ -1031,9 +1033,10 @@ SnapBuildCommitTxn(SnapBuild *builder, XLogRecPtr lsn, TransactionId xid,
 	Assert(!needs_snapshot || needs_timetravel);
 
 	/*
-	 * Adjust xmax of the snapshot builder, we only do that for committed,
-	 * catalog modifying, transactions, everything else isn't interesting for
-	 * us since we'll never look at the respective rows.
+	 * Adjust xmax of the snapshot builder, we do that for catalog modifying
+	 * transactions or for all if we are building full snapshot, everything
+	 * else isn't interesting for us since we'll never look at the respective
+	 * rows.
 	 */
 	if (needs_timetravel &&
 		(!TransactionIdIsValid(builder->xmax) ||
