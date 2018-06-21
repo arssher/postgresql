@@ -165,6 +165,8 @@ static void ReorderBufferReturnTXN(ReorderBuffer *rb, ReorderBufferTXN *txn);
 static ReorderBufferTXN *ReorderBufferTXNByXid(ReorderBuffer *rb,
 					  TransactionId xid, bool create, bool *is_new,
 					  XLogRecPtr lsn, bool create_as_top);
+static void ReorderBufferPassBaseSnapshot(ReorderBufferTXN *txn,
+										  ReorderBufferTXN *subtxn);
 
 static void AssertTXNLsnOrder(ReorderBuffer *rb);
 
@@ -271,6 +273,8 @@ ReorderBufferAllocate(void)
 	buffer->current_restart_decoding_lsn = InvalidXLogRecPtr;
 
 	dlist_init(&buffer->toplevel_by_lsn);
+
+	dlist_init(&buffer->by_base_snapshot_lsn);
 
 	/*
 	 * Ensure there's no stale data from prior uses of this slot, in case some
@@ -471,7 +475,6 @@ ReorderBufferTXNByXid(ReorderBuffer *rb, TransactionId xid, bool create,
 	bool		found;
 
 	Assert(TransactionIdIsValid(xid));
-	Assert(!create || lsn != InvalidXLogRecPtr);
 
 	/*
 	 * Check the one-entry lookup cache first
@@ -515,6 +518,7 @@ ReorderBufferTXNByXid(ReorderBuffer *rb, TransactionId xid, bool create,
 	{
 		/* initialize the new entry, if creation was requested */
 		Assert(ent != NULL);
+		Assert(lsn != InvalidXLogRecPtr);
 
 		ent->txn = ReorderBufferGetTXN(rb);
 		ent->txn->xid = xid;
@@ -623,6 +627,7 @@ AssertTXNLsnOrder(ReorderBuffer *rb)
 #ifdef USE_ASSERT_CHECKING
 	dlist_iter	iter;
 	XLogRecPtr	prev_first_lsn = InvalidXLogRecPtr;
+	XLogRecPtr	prev_base_snap_lsn = InvalidXLogRecPtr;
 
 	dlist_foreach(iter, &rb->toplevel_by_lsn)
 	{
@@ -639,6 +644,20 @@ AssertTXNLsnOrder(ReorderBuffer *rb)
 
 		Assert(!cur_txn->is_known_as_subxact);
 		prev_first_lsn = cur_txn->first_lsn;
+	}
+
+	dlist_foreach(iter, &rb->by_base_snapshot_lsn)
+	{
+		ReorderBufferTXN *cur_txn;
+
+		cur_txn = dlist_container(ReorderBufferTXN, base_snapshot_node, iter.cur);
+		Assert(cur_txn->base_snapshot_lsn != InvalidXLogRecPtr);
+
+		if (prev_base_snap_lsn != InvalidXLogRecPtr)
+			Assert(prev_base_snap_lsn < cur_txn->base_snapshot_lsn);
+
+		Assert(!cur_txn->is_known_as_subxact);
+		prev_base_snap_lsn = cur_txn->base_snapshot_lsn;
 	}
 #endif
 }
@@ -660,6 +679,29 @@ ReorderBufferGetOldestTXN(ReorderBuffer *rb)
 	return txn;
 }
 
+/*
+ * Returns oldest possibly running xid from POV of snapshots used in xacts
+ * ReorderBuffer currently keeps, or InvalidTransactionId if there are none.
+ * Since snapshots are assigned monotonically, it is enough to check xmin of
+ * base snapshot with minimal base_snapshot_lsn.
+ */
+TransactionId
+ReorderBufferGetOldestXmin(ReorderBuffer *rb)
+{
+	ReorderBufferTXN *txn;
+
+	if (dlist_is_empty(&rb->by_base_snapshot_lsn))
+		return InvalidTransactionId;
+
+	AssertTXNLsnOrder(rb);
+
+	txn = dlist_head_element(ReorderBufferTXN, base_snapshot_node,
+							 &rb->by_base_snapshot_lsn);
+
+	Assert(txn->base_snapshot != NULL);
+	return txn->base_snapshot->xmin;
+}
+
 void
 ReorderBufferSetRestartPoint(ReorderBuffer *rb, XLogRecPtr ptr)
 {
@@ -678,32 +720,80 @@ ReorderBufferAssignChild(ReorderBuffer *rb, TransactionId xid,
 	txn = ReorderBufferTXNByXid(rb, xid, true, &new_top, lsn, true);
 	subtxn = ReorderBufferTXNByXid(rb, subxid, true, &new_sub, lsn, false);
 
-	if (new_sub)
-	{
-		/*
-		 * we assign subtransactions to top level transaction even if we don't
-		 * have data for it yet, assignment records frequently reference xids
-		 * that have not yet produced any records. Knowing those aren't top
-		 * level xids allows us to make processing cheaper in some places.
-		 */
-		dlist_push_tail(&txn->subtxns, &subtxn->node);
-		txn->nsubtxns++;
-	}
-	else if (!subtxn->is_known_as_subxact)
-	{
-		subtxn->is_known_as_subxact = true;
-		Assert(subtxn->nsubtxns == 0);
+	if (new_top && !new_sub)
+		elog(ERROR, "subxact logged without previous toplevel record");
 
-		/* remove from lsn order list of top-level transactions */
-		dlist_delete(&subtxn->node);
-
-		/* add to toplevel transaction */
-		dlist_push_tail(&txn->subtxns, &subtxn->node);
-		txn->nsubtxns++;
-	}
-	else if (new_top)
+	if (!new_sub)
 	{
-		elog(ERROR, "existing subxact assigned to unknown toplevel xact");
+		if (subtxn->is_known_as_subxact)
+			/* already associated, nothing to do */
+			return;
+		else
+		{
+			/*
+			 * We have seen this subxact previously, but created it as a top.
+			 * Now remove it from lsn order list of top-level transactions.
+			 */
+			dlist_delete(&subtxn->node);
+		}
+	}
+
+	subtxn->is_known_as_subxact = true;
+	subtxn->toplevel_xid = xid;
+	Assert(subtxn->nsubtxns == 0);
+
+	/* add to subtransaction list */
+	dlist_push_tail(&txn->subtxns, &subtxn->node);
+	txn->nsubtxns++;
+
+	/*
+	 * If subxact already got base snapshot, pass it to toplevel.
+	 * This allows to queue further base snapshots only to toplevel.
+	 */
+	ReorderBufferPassBaseSnapshot(txn, subtxn);
+	AssertTXNLsnOrder(rb);
+}
+
+/*
+ * Pass base snapshot of subtxn to the toplevel txn if it doesn't have one, or
+ * subtxn's is earlier. That can happen if there are no changes in the
+ * toplevel transaction but in one of the child transactions (or first change
+ * in subxact has earlier lsn than first change in xact and we learned about
+ * xacts relationship only now). This is required for correct decoding as we
+ * replay all subxacts in one shot with toplevel. We do that as soon as we
+ * become aware of the kinship to avoid queueing extra snapshots to known
+ * subxacts -- only toplevel will receive further snaps.
+ */
+static void
+ReorderBufferPassBaseSnapshot(ReorderBufferTXN *txn, ReorderBufferTXN *subtxn)
+{
+	if (subtxn->base_snapshot != NULL &&
+		(txn->base_snapshot == NULL ||
+		 txn->base_snapshot_lsn > subtxn->base_snapshot_lsn))
+	{
+		/* toplevel has base snapshot, but it's too fresh; purge it */
+		if (txn->base_snapshot != NULL)
+		{
+			SnapBuildSnapDecRefcount(txn->base_snapshot);
+			dlist_delete(&txn->base_snapshot_node);
+		}
+
+		txn->base_snapshot = subtxn->base_snapshot;
+		txn->base_snapshot_lsn = subtxn->base_snapshot_lsn;
+		subtxn->base_snapshot = NULL;
+		subtxn->base_snapshot_lsn = InvalidXLogRecPtr;
+		/* We must preserve the correct place in by_base_snapshot_lsn list */
+		dlist_insert_before(&subtxn->base_snapshot_node, &txn->base_snapshot_node);
+		/* Now remove subtxn from it */
+		dlist_delete(&subtxn->base_snapshot_node);
+	}
+	else if (subtxn->base_snapshot != NULL)
+	{
+		/* Base snap of toplevel is fine, so subxact's one is not needed */
+		SnapBuildSnapDecRefcount(subtxn->base_snapshot);
+		dlist_delete(&subtxn->base_snapshot_node);
+		subtxn->base_snapshot = NULL;
+		subtxn->base_snapshot_lsn = InvalidXLogRecPtr;
 	}
 }
 
@@ -716,7 +806,6 @@ ReorderBufferCommitChild(ReorderBuffer *rb, TransactionId xid,
 						 TransactionId subxid, XLogRecPtr commit_lsn,
 						 XLogRecPtr end_lsn)
 {
-	ReorderBufferTXN *txn;
 	ReorderBufferTXN *subtxn;
 
 	subtxn = ReorderBufferTXNByXid(rb, subxid, false, NULL,
@@ -728,42 +817,14 @@ ReorderBufferCommitChild(ReorderBuffer *rb, TransactionId xid,
 	if (!subtxn)
 		return;
 
-	txn = ReorderBufferTXNByXid(rb, xid, false, NULL, commit_lsn, true);
-
-	if (txn == NULL)
-		elog(ERROR, "subxact logged without previous toplevel record");
-
-	/*
-	 * Pass our base snapshot to the parent transaction if it doesn't have
-	 * one, or ours is older. That can happen if there are no changes in the
-	 * toplevel transaction but in one of the child transactions. This allows
-	 * the parent to simply use its base snapshot initially.
-	 */
-	if (subtxn->base_snapshot != NULL &&
-		(txn->base_snapshot == NULL ||
-		 txn->base_snapshot_lsn > subtxn->base_snapshot_lsn))
-	{
-		txn->base_snapshot = subtxn->base_snapshot;
-		txn->base_snapshot_lsn = subtxn->base_snapshot_lsn;
-		subtxn->base_snapshot = NULL;
-		subtxn->base_snapshot_lsn = InvalidXLogRecPtr;
-	}
-
 	subtxn->final_lsn = commit_lsn;
 	subtxn->end_lsn = end_lsn;
 
-	if (!subtxn->is_known_as_subxact)
-	{
-		subtxn->is_known_as_subxact = true;
-		Assert(subtxn->nsubtxns == 0);
-
-		/* remove from lsn order list of top-level transactions */
-		dlist_delete(&subtxn->node);
-
-		/* add to subtransaction list */
-		dlist_push_tail(&txn->subtxns, &subtxn->node);
-		txn->nsubtxns++;
-	}
+	/*
+	 * We already checked subtxn existence and no ReorderBufferTXNs will be
+	 * created in this call, so lsn doesn't matter at all.
+	 */
+	ReorderBufferAssignChild(rb, xid, subxid, InvalidXLogRecPtr);
 }
 
 
@@ -1092,6 +1153,7 @@ ReorderBufferCleanupTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		SnapBuildSnapDecRefcount(txn->base_snapshot);
 		txn->base_snapshot = NULL;
 		txn->base_snapshot_lsn = InvalidXLogRecPtr;
+		dlist_delete(&txn->base_snapshot_node);
 	}
 
 	/*
@@ -1873,6 +1935,9 @@ ReorderBufferAddSnapshot(ReorderBuffer *rb, TransactionId xid,
  * Setup the base snapshot of a transaction. The base snapshot is the snapshot
  * that is used to decode all changes until either this transaction modifies
  * the catalog or another catalog modifying transaction commits.
+ * If we know that xid is subxact, we just make sure that toplevel has
+ * the base snapshot. If toplevel already has some base snapshot, it
+ * definitely has also passed snap as its base or queued in its change queue.
  *
  * Needs to be called before any changes are added with
  * ReorderBufferQueueChange().
@@ -1888,8 +1953,19 @@ ReorderBufferSetBaseSnapshot(ReorderBuffer *rb, TransactionId xid,
 	Assert(txn->base_snapshot == NULL);
 	Assert(snap != NULL);
 
+	if (txn->is_known_as_subxact)
+	{
+		/* Will operate on toplevel */
+		txn = ReorderBufferTXNByXid(rb, txn->toplevel_xid, false,
+									NULL, InvalidXLogRecPtr, false);
+		Assert(txn != NULL);
+		Assert(txn->base_snapshot == NULL);
+	}
+
 	txn->base_snapshot = snap;
 	txn->base_snapshot_lsn = lsn;
+	dlist_push_tail(&rb->by_base_snapshot_lsn, &txn->base_snapshot_node);
+	AssertTXNLsnOrder(rb);
 }
 
 /*
@@ -2009,6 +2085,9 @@ ReorderBufferXidHasCatalogChanges(ReorderBuffer *rb, TransactionId xid)
 
 /*
  * Have we already added the first snapshot?
+ * If xid is known subxact, we check toplevel, as known subxacts never keep
+ * base snapshot themselves. This allows to queue new snapshots only to the
+ * toplevel instead of duplicating them in change queues of subxacts.
  */
 bool
 ReorderBufferXidHasBaseSnapshot(ReorderBuffer *rb, TransactionId xid)
@@ -2022,12 +2101,19 @@ ReorderBufferXidHasBaseSnapshot(ReorderBuffer *rb, TransactionId xid)
 	if (txn == NULL)
 		return false;
 
-	/*
-	 * TODO: It would be a nice improvement if we would check the toplevel
-	 * transaction in subtransactions, but we'd need to keep track of a bit
-	 * more state.
-	 */
-	return txn->base_snapshot != NULL;
+	if (txn->is_known_as_subxact)
+	{
+		ReorderBufferTXN *toplevel_txn;
+
+		Assert(txn->base_snapshot == NULL);
+		toplevel_txn = ReorderBufferTXNByXid(rb, txn->toplevel_xid, false,
+											 NULL, InvalidXLogRecPtr, false);
+		Assert(toplevel_txn != NULL);
+		return toplevel_txn->base_snapshot != NULL;
+
+	}
+	else
+		return txn->base_snapshot != NULL;
 }
 
 

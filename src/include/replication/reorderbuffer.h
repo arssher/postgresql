@@ -161,9 +161,10 @@ typedef struct ReorderBufferTXN
 	bool		has_catalog_changes;
 
 	/*
-	 * Do we know this is a subxact?
+	 * Do we know this is a subxact? Xid of top-level, if yes.
 	 */
 	bool		is_known_as_subxact;
+	TransactionId	toplevel_xid;
 
 	/*
 	 * LSN of the first data carrying, WAL record with knowledge about this
@@ -213,6 +214,7 @@ typedef struct ReorderBufferTXN
 	 */
 	Snapshot	base_snapshot;
 	XLogRecPtr	base_snapshot_lsn;
+	dlist_node	base_snapshot_node; /* position in by_base_snapshot_lsn list */
 
 	/*
 	 * How many ReorderBufferChange's do we have in this txn.
@@ -338,6 +340,16 @@ struct ReorderBuffer
 	dlist_head	toplevel_by_lsn;
 
 	/*
+	 * Transactions (or subxacts) that have base snapshot, ordered by LSN of
+	 * the first record which forced us to set the base snapshot. Used for
+	 * advancing slot's xmin: xmin of the first snapshot defines which xid we
+	 * still need to consider as running. This is not the same as
+	 * toplevel_by_lsn: we set snapshot only on data-carrying record, e.g.
+	 * heap insert/update/delete, not just the first.
+	 */
+	dlist_head	by_base_snapshot_lsn;
+
+	/*
 	 * one-entry sized cache for by_txn. Very frequently the same txn gets
 	 * looked up over and over again.
 	 */
@@ -422,6 +434,7 @@ bool		ReorderBufferXidHasCatalogChanges(ReorderBuffer *, TransactionId xid);
 bool		ReorderBufferXidHasBaseSnapshot(ReorderBuffer *, TransactionId xid);
 
 ReorderBufferTXN *ReorderBufferGetOldestTXN(ReorderBuffer *);
+TransactionId ReorderBufferGetOldestXmin(ReorderBuffer *rb);
 
 void		ReorderBufferSetRestartPoint(ReorderBuffer *, XLogRecPtr ptr);
 
