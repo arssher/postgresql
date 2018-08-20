@@ -56,6 +56,8 @@
 
 #include <fcntl.h>
 #include <time.h>
+#define UNW_LOCAL_ONLY
+#include <libunwind.h>
 #include <unistd.h>
 #include <signal.h>
 #include <ctype.h>
@@ -3762,4 +3764,40 @@ trace_recovery(int trace_level)
 		return LOG;
 
 	return trace_level;
+}
+
+void
+elog_backtrace(void)
+{
+  unw_cursor_t cursor;
+  unw_context_t context;
+  StringInfoData buf;
+
+  initStringInfo(&buf);
+
+  /* Initialize cursor to current frame for local unwinding. */
+  unw_getcontext(&context);
+  unw_init_local(&cursor, &context);
+
+  /* Unwind frames one by one, going up the frame stack. */
+  while (unw_step(&cursor) > 0) {
+	  unw_word_t offset, pc;
+	  char sym[256];
+
+	  /* Get instruction pointer contents */
+	  unw_get_reg(&cursor, UNW_REG_IP, &pc);
+	  if (pc == 0) {
+		  break;
+	  }
+	  appendStringInfo(&buf, "0x%lx:", pc);
+
+	  if (unw_get_proc_name(&cursor, sym, sizeof(sym), &offset) == 0) {
+		  appendStringInfo(&buf, " (%s+0x%lx)\n", sym, offset);
+	  } else {
+		  appendStringInfo(&buf, " -- error: unable to obtain symbol name for this frame\n");
+	  }
+  }
+
+  elog(WARNING, "Backtrace:\n%s", buf.data);
+  pfree(buf.data);
 }
